@@ -1,0 +1,152 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import Navbar from "@/components/Navbar";
+import { useApp } from "@/context/AppStore";
+import { useAppSelector } from "@/lib/redux/hooks";
+
+export default function DashboardPage() {
+  const { projects, createProject } = useApp(); // still old context (unchanged for now)
+  const user = useAppSelector((state) => state.auth.user); // new Redux
+  const router = useRouter();
+
+  const [query, setQuery] = useState("");
+  const [showModal, setShowModal] = useState(false);
+  const [newProject, setNewProject] = useState({ name: "" });
+  const [formError, setFormError] = useState("");
+
+  useEffect(() => {
+    if (!user) {
+      router.replace("/");
+    }
+  }, [user, router]);
+
+  if (!user) {
+    return null;
+  }
+
+  const filtered = projects.filter(
+    (p) =>
+      p.name.toLowerCase().includes(query.toLowerCase()) ||
+      p.category.toLowerCase().includes(query.toLowerCase())
+  );
+
+  const handleCreate = () => {
+    if (!newProject.name.trim()) { setFormError("Project name is required."); return; }
+    createProject(newProject.name.trim(), "General");
+    setNewProject({ name: "" });
+    setFormError("");
+    setShowModal(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <Navbar showSearch={false} />
+
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+
+        {/* Header */}
+        <div className="flex items-start sm:items-center justify-between mb-6 gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Dashboard</h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              {user ? `Welcome back, ${user.name}` : "All Projects"}
+            </p>
+          </div>
+          <button
+            onClick={() => { setFormError(""); setShowModal(true); }}
+            className="flex items-center gap-1.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold px-3 sm:px-4 py-2 rounded-lg transition-colors shadow-sm shadow-violet-200 shrink-0"
+          >
+            <i className="fi fi-rr-plus text-base"></i>
+            <span className="hidden sm:inline">Create Project</span>
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="relative mb-6">
+          <i className="fi fi-rr-search text-base absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search projects..."
+            className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400 shadow-sm"
+          />
+        </div>
+
+        {/* Project list */}
+        {/*
+        <div className="space-y-3">
+          {filtered.length === 0 && (
+            <div className="text-center py-16 text-slate-400">
+              <p className="text-sm">No projects found.</p>
+            </div>
+          )}
+          {filtered.map((project) => (
+            <Link
+              key={project.id}
+              href={`/project/${project.id}`}
+              className="block bg-white border border-slate-200 rounded-xl px-4 sm:px-5 py-4 hover:border-violet-300 hover:shadow-md hover:shadow-violet-50 transition-all group"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <h2 className="font-semibold text-slate-900 text-base group-hover:text-violet-700 transition-colors truncate mb-1">
+                    {project.name}
+                  </h2>
+                  <p className="text-sm text-slate-500 truncate">
+                    {project.ticketCount} tickets
+                    <span className="hidden sm:inline"> · Last updated: {project.lastUpdated}</span>
+                  </p>
+                </div>
+                <i className="fi fi-rr-angle-small-right text-lg text-slate-300 group-hover:text-violet-500 transition-colors shrink-0"></i>
+              </div>
+            </Link>
+          ))}
+        </div>
+        */}
+      </main>
+
+      {/* Create project modal */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-4">Create New Project</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
+                  Project Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newProject.name}
+                  onChange={(e) => setNewProject({ ...newProject, name: e.target.value })}
+                  placeholder="e.g. my_team"
+                  className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 ${!newProject.name && formError ? "border-red-300" : "border-slate-200"}`}
+                  autoFocus
+                  onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+                />
+              </div>
+              {formError && <p className="text-xs text-red-500">{formError}</p>}
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => { setShowModal(false); setNewProject({ name: "" }); setFormError(""); }}
+                className="flex-1 py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                className="flex-1 py-2.5 text-sm font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
+              >
+                Create Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

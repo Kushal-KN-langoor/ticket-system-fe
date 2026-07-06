@@ -1,5 +1,5 @@
 export async function POST(request: Request) {
-  const baseUrl = process.env.BASE_URL;
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
   const body = await request.json();
 
   const response = await fetch(`${baseUrl}/auth/login`, {

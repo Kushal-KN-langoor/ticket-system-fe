@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { useAppSelector } from "@/lib/redux/hooks";
+import { apiClient } from "@/lib/apiClient";
 
 interface Project {
   id?: string;
@@ -45,7 +46,7 @@ export default function DashboardPage() {
     setLoading(true);
     setLoadError("");
     try {
-      const res = await fetch(`/api/users/${user.id}`, {
+      const res = await apiClient(`/api/users/${user.id}/dashboard`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -94,11 +95,10 @@ export default function DashboardPage() {
     setCreating(true);
     setFormError("");
     try {
-      const res = await fetch("/api/project", {
+      const res = await apiClient("/project", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(accessToken ? { "x-auth-token": accessToken } : {}),
         },
         body: JSON.stringify({
           name: newProject.name.trim(),

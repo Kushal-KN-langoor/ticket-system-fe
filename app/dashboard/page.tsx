@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
@@ -20,7 +20,6 @@ interface Project {
 
 export default function DashboardPage() {
   const user = useAppSelector((state) => state.auth.user);
-  const accessToken = useAppSelector((state) => state.auth.accessToken);
   const router = useRouter();
 
   const [projects, setProjects] = useState<Project[]>([]);
@@ -40,42 +39,54 @@ export default function DashboardPage() {
     }
   }, [user, router]);
 
-  // Fetch the user's dashboard (project list) from the backend
-  const fetchDashboard = useCallback(async () => {
-    if (!user?.id) return;
-    setLoading(true);
-    setLoadError("");
-    try {
-      const res = await apiClient(`/api/users/${user.id}/dashboard`, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { "x-auth-token": accessToken } : {}),
-        },
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setLoadError(data.message || data.error || "Failed to load projects.");
-        return;
-      }
-      const list: Project[] = data.projects || [];
-      // Newest first
-      const sorted = [...list].sort((a, b) => {
-        const dateA = new Date(a.created_at || a.createdAt || 0).getTime();
-        const dateB = new Date(b.created_at || b.createdAt || 0).getTime();
-        return dateB - dateA;
-      });
-      setProjects(sorted);
-    } catch {
-      setLoadError("Could not reach the server.");
-    } finally {
-      setLoading(false);
-    }
-  }, [user?.id, accessToken]);
-
   useEffect(() => {
-    fetchDashboard();
-  }, [fetchDashboard]);
+    if (!user?.id) return;
+
+    let isActive = true;
+
+    const fetchDashboard = async () => {
+      setLoading(true);
+      setLoadError("");
+
+      try {
+        const res = await apiClient.get(`/api/users/${user.id}/dashboard`);
+        const data = res.data;
+
+        if (res.status < 200 || res.status >= 300) {
+          if (isActive) {
+            setLoadError(data.message || data.error || "Failed to load projects.");
+          }
+          return;
+        }
+
+        const list: Project[] = data.projects || [];
+        // Newest first
+        const sorted = [...list].sort((a, b) => {
+          const dateA = new Date(a.created_at || a.createdAt || 0).getTime();
+          const dateB = new Date(b.created_at || b.createdAt || 0).getTime();
+          return dateB - dateA;
+        });
+
+        if (isActive) {
+          setProjects(sorted);
+        }
+      } catch {
+        if (isActive) {
+          setLoadError("Could not reach the server.");
+        }
+      } finally {
+        if (isActive) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void fetchDashboard();
+
+    return () => {
+      isActive = false;
+    };
+  }, [user]);
 
   if (!user) {
     return null;
@@ -95,23 +106,26 @@ export default function DashboardPage() {
     setCreating(true);
     setFormError("");
     try {
-      const res = await apiClient("/project", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: newProject.name.trim(),
-          description: newProject.description.trim(),
-        }),
+      const res = await apiClient.post("/project", {
+        name: newProject.name.trim(),
+        description: newProject.description.trim(),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const data = res.data;
+      if (res.status < 200 || res.status >= 300) {
         setFormError(data.message || data.error || "Failed to create project.");
         return;
       }
       // Re-fetch the full list from the backend so it's accurate and correctly ordered
-      await fetchDashboard();
+      if (!user?.id) return;
+      const refreshed = await apiClient.get(`/api/users/${user.id}/dashboard`);
+      const refreshedData = refreshed.data;
+      const list: Project[] = refreshedData.projects || [];
+      const sorted = [...list].sort((a, b) => {
+        const dateA = new Date(a.created_at || a.createdAt || 0).getTime();
+        const dateB = new Date(b.created_at || b.createdAt || 0).getTime();
+        return dateB - dateA;
+      });
+      setProjects(sorted);
       setNewProject({ name: "", description: "" });
       setShowModal(false);
     } catch {

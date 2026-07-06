@@ -28,7 +28,13 @@ const DAY_NAMES: Record<string | number, string> = {
   14: "Thu", 15: "Fri", 16: "Sat", 17: "Sun",
 };
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+type CustomTooltipProps = {
+  active?: boolean;
+  label?: string | number;
+  payload?: Array<{ value?: number | string }>;
+};
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
   if (active && payload && payload.length) {
     return (
       <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-lg">

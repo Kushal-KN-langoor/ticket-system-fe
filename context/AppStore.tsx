@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, ReactNode } from "react";
 import { Project, Ticket, MOCK_PROJECTS, Priority, TicketStatus } from "@/lib/data";
 
 // ---- Auth types ----
@@ -39,31 +39,12 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | null>(null);
 
-// ---- Server-backed JSON storage (replaces localStorage) ----
-// Data lives in JSON files on the server (see /data/*.json), read and
-// written through these tiny API routes instead of the browser's storage.
-async function apiGet<T>(path: string, fallback: T): Promise<T> {
-  try {
-    const res = await fetch(path, { cache: "no-store" });
-    if (!res.ok) return fallback;
-    return (await res.json()) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-async function apiPut(path: string, value: unknown): Promise<void> {
-  try {
-    await fetch(path, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(value),
-    });
-  } catch {
-    // Network/server hiccup — data simply won't persist for this change.
-  }
-}
-
+// ---- In-memory demo data ----
+// This context powers the legacy mock projects/tickets UI (Navbar,
+// KanbanBoard, project detail pages). Real authentication now goes through
+// Redux + the actual backend (see lib/redux/slices/authSlice.ts), so this
+// context no longer syncs users/session to the server — it just keeps
+// local state for the parts of the UI that still depend on it.
 const DEMO_USER: User = {
   id: "demo_1",
   name: "Demo User",
@@ -76,42 +57,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [users, setUsers] = useState<User[]>([DEMO_USER]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [projects, setProjects] = useState<Project[]>(MOCK_PROJECTS);
-  const [hydrated, setHydrated] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const storedUsers = await apiGet<User[]>("/api/users", [DEMO_USER]);
-      const hasdemo = storedUsers.some((u) => u.email === DEMO_USER.email);
-      const allUsers = hasdemo ? storedUsers : [DEMO_USER, ...storedUsers];
-
-      const storedProjects = await apiGet<Project[]>("/api/projects", MOCK_PROJECTS);
-      const session = await apiGet<{ currentUser: User | null }>("/api/session", {
-        currentUser: null,
-      });
-
-      if (cancelled) return;
-
-      setUsers(allUsers);
-      setProjects(storedProjects);
-      if (session.currentUser) {
-        const found = allUsers.find((u) => u.id === session.currentUser!.id);
-        setCurrentUser(found || null);
-      }
-      setHydrated(true);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (hydrated) apiPut("/api/projects", projects);
-  }, [projects, hydrated]);
-
-  useEffect(() => {
-    if (hydrated) apiPut("/api/users", users);
-  }, [users, hydrated]);
 
   const login = useCallback(
     (email: string, password: string): { ok: boolean; error?: string } => {
@@ -122,7 +67,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: "Invalid email or password." };
       }
       setCurrentUser(found);
-      apiPut("/api/session", { currentUser: found });
       return { ok: true };
     },
     [users]
@@ -139,11 +83,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         password,
         role,
       };
-      const updated = [...users, newUser];
-      setUsers(updated);
-      apiPut("/api/users", updated);
+      setUsers((prev) => [...prev, newUser]);
       setCurrentUser(newUser);
-      apiPut("/api/session", { currentUser: newUser });
       return { ok: true };
     },
     [users]
@@ -151,7 +92,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     setCurrentUser(null);
-    apiPut("/api/session", { currentUser: null });
   }, []);
 
   const updateUserName = useCallback(
@@ -159,7 +99,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!currentUser) return;
       const updated = { ...currentUser, name: newName.trim() };
       setCurrentUser(updated);
-      apiPut("/api/session", { currentUser: updated });
       setUsers((prev) =>
         prev.map((u) => (u.id === currentUser.id ? updated : u))
       );

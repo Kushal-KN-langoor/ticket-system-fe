@@ -53,7 +53,7 @@ function CreateTicketForm() {
     setLoading(false);
     setSubmitted(true);
     await new Promise((r) => setTimeout(r, 1200));
-    router.push(`/project/${projectId}`);
+    router.push(`/project/${projectId}?tab=Board`);
   };
 
   useEffect(() => {
@@ -83,7 +83,7 @@ function CreateTicketForm() {
   return (
     <div className="max-w-xl">
       <div className="flex items-center gap-3 mb-6">
-        <Link href={projectId ? `/project/${projectId}` : "/dashboard"} className="text-slate-500 hover:text-violet-600 transition-colors">
+        <Link href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"} className="text-slate-500 hover:text-violet-600 transition-colors">
           <i className="fi fi-rr-arrow-left text-lg"></i>
         </Link>
         <div>
@@ -221,7 +221,7 @@ function CreateTicketForm() {
             ) : "Submit Ticket"}
           </button>
           <Link
-            href={projectId ? `/project/${projectId}` : "/dashboard"}
+            href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"}
             className="flex-1 text-center py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
           >
             Cancel

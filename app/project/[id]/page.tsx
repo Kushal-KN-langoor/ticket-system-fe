@@ -327,7 +327,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {isAdmin && (
+            {isAdmin && activeTab === "Members" && (
               <button
                 onClick={() => { resetMemberForm(); setMemberMode("new"); setShowAddMember(true); }}
                 className="flex items-center gap-1.5 text-sm font-semibold text-violet-700 border border-violet-200 bg-violet-50 hover:bg-violet-100 rounded-lg px-3 py-1.5 transition-colors"
@@ -336,13 +336,15 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 <span className="hidden sm:inline">Add Member</span>
               </button>
             )}
-            <Link
-              href={`/create-ticket?project=${project.id}&tab=${activeTab}&name=${encodeURIComponent(project.name)}&description=${encodeURIComponent(project.description || "")}`}
-              className="flex items-center gap-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-1.5 transition-colors shadow-sm shadow-violet-200"
-            >
-              <i className="fi fi-rr-plus text-sm"></i>
-              <span className="hidden sm:inline">Create Ticket</span>
-            </Link>
+            {activeTab === "Board" && (
+              <Link
+                href={`/create-ticket?project=${project.id}&tab=Board&name=${encodeURIComponent(project.name)}&description=${encodeURIComponent(project.description || "")}`}
+                className="flex items-center gap-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-1.5 transition-colors shadow-sm shadow-violet-200"
+              >
+                <i className="fi fi-rr-plus text-sm"></i>
+                <span className="hidden sm:inline">Create Ticket</span>
+              </Link>
+            )}
           </div>
         </div>
 

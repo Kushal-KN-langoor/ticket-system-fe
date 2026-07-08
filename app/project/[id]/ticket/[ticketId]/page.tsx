@@ -1,14 +1,41 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { useEffect, useState, use, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
-import { PRIORITY_COLORS, STATUS_COLORS, TicketStatus } from "@/lib/data";
-import { useApp } from "@/context/AppStore";
+import { apiClient } from "@/lib/apiClient";
+import { applyStatusOverrides, setStatusOverride } from "@/lib/ticketStatusStore";
+import {
+  PRIORITY_COLORS,
+  STATUS_COLORS,
+  TicketStatus,
+  Ticket,
+  Comment,
+  BackendTicket,
+  mapBackendTicket,
+} from "@/lib/data";
 import { useAppSelector } from "@/lib/redux/hooks";
 
 const ALL_STATUSES: TicketStatus[] = ["Backlog", "To Do", "In Progress", "Review", "Done"];
+
+interface BackendComment {
+  id: string;
+  ticket_id: string;
+  user_id: string;
+  comment_text: string;
+  created_at: string;
+  users?: { id: string; name: string; email: string } | null;
+}
+
+function mapBackendComment(raw: BackendComment): Comment {
+  return {
+    id: raw.id,
+    author: raw.users?.name || "User",
+    text: raw.comment_text,
+    timestamp: new Date(raw.created_at).toLocaleString(),
+  };
+}
 
 export default function TicketPage({
   params,
@@ -16,11 +43,20 @@ export default function TicketPage({
   params: Promise<{ id: string; ticketId: string }>;
 }) {
   const { id, ticketId } = use(params);
-  const { projects, updateTicketStatus, addComment } = useApp();
-  const user = useAppSelector((state) => state.auth.user); // new Redux
+  const user = useAppSelector((state) => state.auth.user);
   const router = useRouter();
 
+  const [ticket, setTicket] = useState<Ticket | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(true);
+
   const [comment, setComment] = useState("");
+  const [sendingComment, setSendingComment] = useState(false);
+  const [commentError, setCommentError] = useState("");
+
   const [showStatusMenu, setShowStatusMenu] = useState(false);
 
   useEffect(() => {
@@ -29,40 +65,124 @@ export default function TicketPage({
     }
   }, [user, router]);
 
+  // There's no GET /tickets/:id — only GET /tickets (all of them) — so we
+  // fetch the full list and pick out the one we need, same approach as the
+  // project page.
+  useEffect(() => {
+    if (!user) return;
+    let isActive = true;
+
+    const fetchTicket = async () => {
+      setLoading(true);
+      setLoadError("");
+      try {
+        const res = await apiClient.get("/tickets");
+        const all: BackendTicket[] = res.data?.tickets || [];
+        const raw = all.find((t) => t.id === ticketId && t.project_id === id);
+        if (!isActive) return;
+        if (!raw) {
+          setLoadError("Ticket not found.");
+          return;
+        }
+        setTicket(applyStatusOverrides([mapBackendTicket(raw)])[0]);
+      } catch {
+        if (isActive) setLoadError("Could not reach the server.");
+      } finally {
+        if (isActive) setLoading(false);
+      }
+    };
+
+    void fetchTicket();
+    return () => {
+      isActive = false;
+    };
+  }, [id, ticketId, user]);
+
+  const fetchComments = useCallback(async () => {
+    setCommentsLoading(true);
+    try {
+      const res = await apiClient.get(`/tickets/${ticketId}/comments`);
+      const raw: BackendComment[] = res.data?.comments || [];
+      setComments(raw.map(mapBackendComment));
+    } catch {
+      // Leave whatever comments we already have (e.g. from the ticket's
+      // own payload) rather than wiping the list on a transient error.
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, [ticketId]);
+
+  useEffect(() => {
+    if (!user) return;
+    void fetchComments();
+  }, [user, fetchComments]);
+
   if (!user) {
     return null;
   }
 
-  const project = projects.find((p) => p.id === id);
-  const ticket = project?.tickets.find((t) => t.id === ticketId);
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <p className="text-slate-400 text-sm">Loading ticket...</p>
+      </div>
+    );
+  }
 
-  if (!ticket) {
+  if (!ticket || loadError) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center">
-          <p className="text-slate-500 mb-4">Ticket not found.</p>
+          <p className="text-slate-500 mb-4">{loadError || "Ticket not found."}</p>
           <Link href={`/project/${id}`} className="text-violet-600 hover:underline text-sm">← Back to Project</Link>
         </div>
       </div>
     );
   }
 
-  const handleSendComment = () => {
-    if (!comment.trim()) return;
-    addComment(id, ticketId, comment.trim());
-    setComment("");
+  const handleSendComment = async () => {
+    const text = comment.trim();
+    if (!text || sendingComment) return;
+
+    setSendingComment(true);
+    setCommentError("");
+    try {
+      await apiClient.post(`/tickets/${ticketId}/comments`, {
+        comment_text: text,
+      });
+      setComment("");
+      await fetchComments();
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.message ||
+        (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.error ||
+        "Failed to post comment.";
+      setCommentError(message);
+    } finally {
+      setSendingComment(false);
+    }
   };
 
+  // NOTE: same caveat as the board — there's no confirmed backend endpoint
+  // for changing ticket status yet, so this is a best-effort PATCH guess.
+  // The override cache is what actually keeps this consistent with the
+  // board when you navigate back, regardless of whether the request lands.
   const handleSetStatus = (s: TicketStatus) => {
-    updateTicketStatus(id, ticketId, s);
+    setStatusOverride(ticketId, s);
+    setTicket((prev) => (prev ? { ...prev, status: s } : prev));
     setShowStatusMenu(false);
+    apiClient.patch(`/tickets/${ticketId}`, { status: s }).catch((err) => {
+      console.warn("Status change may not have been saved to the server:", err);
+    });
   };
 
   return (
     <div className="min-h-screen bg-slate-50">
       <Navbar
         showDashboardBtn
-        breadcrumb={`/ ${id} / ${ticketId}`}
+        breadcrumb={`/ ${id} / ${ticket.ticketNumber || ticketId}`}
         showSearch={false}
       />
 
@@ -102,7 +222,7 @@ export default function TicketPage({
 
         <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 mb-5 flex items-center gap-3">
           <h1 className="text-lg font-bold text-slate-900 flex-1">
-            {ticketId} — {ticket.title}
+            {ticket.ticketNumber || ticketId} — {ticket.title}
           </h1>
           <span className={`text-xs font-semibold px-2.5 py-1 rounded border ${PRIORITY_COLORS[ticket.priority]}`}>
             Priority: {ticket.priority}
@@ -112,7 +232,6 @@ export default function TicketPage({
         {/* Info grid */}
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-5">
           {[
-            { key: "Category", val: ticket.category },
             { key: "Priority", val: ticket.priority },
             { key: "Assignee", val: ticket.assignee },
             { key: "Created On", val: ticket.createdAt },
@@ -143,10 +262,6 @@ export default function TicketPage({
                 {ticket.attachments.map((a) => (
                   <div key={a.id} className="flex items-center justify-between text-sm border border-slate-100 rounded-lg px-3 py-2 hover:bg-slate-50">
                     <span className="text-slate-700">📄 {a.name}</span>
-                    <div className="flex items-center gap-2 text-slate-400">
-                      <span className="text-xs">{a.size}</span>
-                      <i className="fi fi-rr-download text-xs hover:text-violet-600 cursor-pointer" />
-                    </div>
                   </div>
                 ))}
               </div>
@@ -156,23 +271,28 @@ export default function TicketPage({
           {/* Comments */}
           <div className="bg-white border border-slate-200 rounded-xl p-5">
             <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-4">
-              Comments ({ticket.comments.length})
+              Comments ({comments.length})
             </h2>
             <div className="space-y-3 mb-4">
-              {ticket.comments.map((c) => (
-                <div key={c.id} className="border border-slate-100 rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <div className="w-6 h-6 bg-violet-100 rounded-full flex items-center justify-center text-xs font-bold text-violet-700">
-                      {c.author[0]}
+              {commentsLoading && <p className="text-sm text-slate-400">Loading comments...</p>}
+              {!commentsLoading &&
+                comments.map((c) => (
+                  <div key={c.id} className="border border-slate-100 rounded-lg p-3">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <div className="w-6 h-6 bg-violet-100 rounded-full flex items-center justify-center text-xs font-bold text-violet-700">
+                        {c.author[0]}
+                      </div>
+                      <span className="text-xs font-semibold text-slate-700">{c.author}</span>
+                      <span className="text-xs text-slate-400">{c.timestamp}</span>
                     </div>
-                    <span className="text-xs font-semibold text-slate-700">{c.author}</span>
-                    <span className="text-xs text-slate-400">{c.timestamp}</span>
+                    <p className="text-sm text-slate-600 ml-8">{c.text}</p>
                   </div>
-                  <p className="text-sm text-slate-600 ml-8">{c.text}</p>
-                </div>
-              ))}
-              {ticket.comments.length === 0 && <p className="text-sm text-slate-400">No comments yet.</p>}
+                ))}
+              {!commentsLoading && comments.length === 0 && (
+                <p className="text-sm text-slate-400">No comments yet.</p>
+              )}
             </div>
+            {commentError && <p className="text-xs text-red-500 mb-2">{commentError}</p>}
             <div className="flex gap-2">
               <input
                 type="text"
@@ -180,11 +300,13 @@ export default function TicketPage({
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSendComment()}
                 placeholder="Write a comment..."
-                className="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                disabled={sendingComment}
+                className="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-300 disabled:bg-slate-50"
               />
               <button
                 onClick={handleSendComment}
-                className="bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-2 transition-colors"
+                disabled={sendingComment}
+                className="bg-violet-600 hover:bg-violet-700 disabled:bg-violet-400 text-white rounded-lg px-3 py-2 transition-colors"
               >
                 <i className="fi fi-rr-paper-plane text-sm"></i>
               </button>

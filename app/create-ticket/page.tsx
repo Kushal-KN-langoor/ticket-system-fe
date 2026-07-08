@@ -4,63 +4,99 @@ import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
-import { useApp } from "@/context/AppStore";
 import { useAppSelector } from "@/lib/redux/hooks";
+import { apiClient } from "@/lib/apiClient";
 import { Priority } from "@/lib/data";
+
+interface ProjectMember {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
 
 function CreateTicketForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const projectId = searchParams.get("project") || "";
-  const { createTicket, projects } = useApp();
-  const user = useAppSelector((state) => state.auth.user); // new Redux
-
-  const project = projects.find((p) => p.id === projectId);
+  const projectName = searchParams.get("name") || "";
+  const user = useAppSelector((state) => state.auth.user);
 
   const [form, setForm] = useState({
     title: "",
-    category: "",
     description: "",
     priority: "" as Priority | "",
-    assignee: "",
+    assignedTo: "",
+    dueDate: "",
   });
-  const [file, setFile] = useState<File | null>(null);
+
+  const [members, setMembers] = useState<ProjectMember[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [apiError, setApiError] = useState("");
+
+  // Redirect if not logged in
+  useEffect(() => {
+    if (!user) {
+      router.replace("/");
+    }
+  }, [user, router]);
+
+  // Load real project members so "Assignee" has real user IDs, not fake names
+  useEffect(() => {
+    if (!projectId) return;
+    apiClient
+      .get(`/project/${projectId}/members`)
+      .then((res) => setMembers(res.data.members || []))
+      .catch(() => setMembers([]));
+  }, [projectId]);
 
   const validate = () => {
     const e: Record<string, string> = {};
     if (!form.title.trim()) e.title = "Title is required";
-    if (!form.category) e.category = "Category is required";
     if (!form.description.trim()) e.description = "Description is required";
     if (!form.priority) e.priority = "Priority is required";
     return e;
   };
 
   const handleSubmit = async () => {
+    setApiError("");
     const e = validate();
-    if (Object.keys(e).length) { setErrors(e); return; }
-    setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
-    createTicket(projectId, {
-      title: form.title,
-      category: form.category,
-      description: form.description,
-      priority: form.priority as Priority,
-      assignee: form.assignee,
-    });
-    setLoading(false);
-    setSubmitted(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    router.push(`/project/${projectId}?tab=Board`);
-  };
-
-  useEffect(() => {
-    if (!user) {
-      router.replace("/");
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
     }
-  }, [user, router]);
+
+    setLoading(true);
+    try {
+      await apiClient.post("/tickets", {
+        title: form.title,
+        description: form.description,
+        status: "To Do",
+        priority: form.priority,
+        ticket_order: "1",
+        project_id: projectId,
+        assigned_to: form.assignedTo || undefined,
+        due_date: form.dueDate ? new Date(form.dueDate).toISOString() : undefined,
+      });
+
+      setSubmitted(true);
+      setTimeout(() => {
+        router.push(`/project/${projectId}?tab=Board`);
+      }, 1200);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.message ||
+        (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.error ||
+        "Failed to create ticket. Please try again.";
+      setApiError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (!user) {
     return null;
@@ -78,17 +114,18 @@ function CreateTicketForm() {
     );
   }
 
-  const teamMembers = ["John Doe", "Jane Smith", "Emily Davis", "Mike Johnson", "Alex Chen", "Sarah Park"];
-
   return (
     <div className="max-w-xl">
       <div className="flex items-center gap-3 mb-6">
-        <Link href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"} className="text-slate-500 hover:text-violet-600 transition-colors">
+        <Link
+          href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"}
+          className="text-slate-500 hover:text-violet-600 transition-colors"
+        >
           <i className="fi fi-rr-arrow-left text-lg"></i>
         </Link>
         <div>
           <h1 className="text-xl font-bold text-slate-900">Create New Ticket</h1>
-          {project && <p className="text-sm text-slate-500">Project: {project.name}</p>}
+          {projectName && <p className="text-sm text-slate-500">Project: {projectName}</p>}
         </div>
       </div>
 
@@ -103,30 +140,11 @@ function CreateTicketForm() {
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
             placeholder="Enter a clear, specific ticket title"
-            className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 transition-all ${errors.title ? "border-red-300 bg-red-50" : "border-slate-200"}`}
+            className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 transition-all ${
+              errors.title ? "border-red-300 bg-red-50" : "border-slate-200"
+            }`}
           />
           {errors.title && <p className="text-xs text-red-500 mt-1">{errors.title}</p>}
-        </div>
-
-        {/* Category */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
-            Category <span className="text-red-500">*</span>
-          </label>
-          <select
-            value={form.category}
-            onChange={(e) => setForm({ ...form, category: e.target.value })}
-            className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 bg-white transition-all ${errors.category ? "border-red-300 bg-red-50" : "border-slate-200"}`}
-          >
-            <option value="">Select Category</option>
-            <option>IT Support</option>
-            <option>Network</option>
-            <option>Software</option>
-            <option>Hardware</option>
-            <option>DevOps</option>
-            <option>Other</option>
-          </select>
-          {errors.category && <p className="text-xs text-red-500 mt-1">{errors.category}</p>}
         </div>
 
         {/* Description */}
@@ -139,7 +157,9 @@ function CreateTicketForm() {
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             placeholder="Describe the issue in detail — steps to reproduce, expected vs actual behavior, etc."
             rows={4}
-            className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 resize-none transition-all ${errors.description ? "border-red-300 bg-red-50" : "border-slate-200"}`}
+            className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 resize-none transition-all ${
+              errors.description ? "border-red-300 bg-red-50" : "border-slate-200"
+            }`}
           />
           {errors.description && <p className="text-xs text-red-500 mt-1">{errors.description}</p>}
         </div>
@@ -157,9 +177,11 @@ function CreateTicketForm() {
                 onClick={() => setForm({ ...form, priority: p })}
                 className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
                   form.priority === p
-                    ? p === "High" ? "bg-red-100 border-red-300 text-red-700"
-                    : p === "Medium" ? "bg-amber-100 border-amber-300 text-amber-700"
-                    : "bg-green-100 border-green-300 text-green-700"
+                    ? p === "High"
+                      ? "bg-red-100 border-red-300 text-red-700"
+                      : p === "Medium"
+                      ? "bg-amber-100 border-amber-300 text-amber-700"
+                      : "bg-green-100 border-green-300 text-green-700"
                     : "border-slate-200 text-slate-500 hover:border-slate-300"
                 }`}
               >
@@ -170,39 +192,39 @@ function CreateTicketForm() {
           {errors.priority && <p className="text-xs text-red-500 mt-1">{errors.priority}</p>}
         </div>
 
-        {/* Assignee */}
+        {/* Assignee (real project members, real IDs) */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Assignee <span className="text-xs font-normal text-slate-400">(optional)</span>
           </label>
           <select
-            value={form.assignee}
-            onChange={(e) => setForm({ ...form, assignee: e.target.value })}
+            value={form.assignedTo}
+            onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
             className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 bg-white"
           >
             <option value="">Unassigned</option>
-            {teamMembers.map((m) => <option key={m}>{m}</option>)}
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.email})
+              </option>
+            ))}
           </select>
         </div>
 
-        {/* Attachment */}
+        {/* Due date */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
-            Attachment <span className="text-xs font-normal text-slate-400">(optional)</span>
+            Due Date <span className="text-xs font-normal text-slate-400">(optional)</span>
           </label>
-          <label className="block border-2 border-dashed border-slate-200 hover:border-violet-300 rounded-xl p-6 text-center cursor-pointer transition-colors group">
-            <i className="fi fi-rr-upload text-xl mx-auto text-slate-300 group-hover:text-violet-400 mb-2 transition-colors"></i>
-            {file ? (
-              <span className="text-sm text-violet-700 font-medium">{file.name}</span>
-            ) : (
-              <>
-                <span className="text-sm text-slate-400">Upload File</span>
-                <span className="block text-xs text-slate-300 mt-0.5">or drag and drop</span>
-              </>
-            )}
-            <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          </label>
+          <input
+            type="date"
+            value={form.dueDate}
+            onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
+            className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300"
+          />
         </div>
+
+        {apiError && <p className="text-xs text-red-500">{apiError}</p>}
 
         <p className="text-xs text-slate-400">* Required fields</p>
 
@@ -218,7 +240,9 @@ function CreateTicketForm() {
                 <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 Submitting...
               </span>
-            ) : "Submit Ticket"}
+            ) : (
+              "Submit Ticket"
+            )}
           </button>
           <Link
             href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"}

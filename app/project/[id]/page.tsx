@@ -9,7 +9,8 @@ import KanbanBoard from "@/components/KanbanBoard";
 import { useApp } from "@/context/AppStore";
 import { useAppSelector } from "@/lib/redux/hooks";
 import { apiClient } from "@/lib/apiClient";
-import { Ticket } from "@/lib/data";
+import { Ticket, BackendTicket, mapBackendTicket } from "@/lib/data";
+import { applyStatusOverrides, setStatusOverride } from "@/lib/ticketStatusStore";
 
 type Tab = "Summary" | "Board" | "Members";
 type MemberMode = "new" | "existing";
@@ -63,6 +64,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(true);
   const [membersError, setMembersError] = useState("");
+
+  // Real tickets from the backend, filtered down to this project.
+  // GET /api/tickets returns every ticket across every project — there's
+  // no project-scoped endpoint — so we fetch all and filter client-side.
+  const [realTickets, setRealTickets] = useState<Ticket[] | null>(null);
+  const [ticketsError, setTicketsError] = useState("");
 
   const isAdmin = user?.role?.toLowerCase() === "admin";
 
@@ -167,6 +174,25 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       isActive = false;
     };
   }, [id, user, mockProjects]);
+
+  const fetchTickets = async () => {
+    setTicketsError("");
+    try {
+      const res = await apiClient.get("/tickets");
+      const all: BackendTicket[] = res.data?.tickets || [];
+      const mine = all.filter((t) => t.project_id === id).map(mapBackendTicket);
+      setRealTickets(applyStatusOverrides(mine));
+    } catch {
+      setTicketsError("Could not load tickets from the server.");
+      setRealTickets(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    void fetchTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, user]);
 
   const fetchMembers = async () => {
     setMembersLoading(true);
@@ -302,9 +328,27 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     );
   }
 
-  const open = project.tickets.filter((t) => t.status === "Backlog" || t.status === "To Do").length;
-  const inProgress = project.tickets.filter((t) => t.status === "In Progress").length;
-  const resolved = project.tickets.filter((t) => t.status === "Done").length;
+  // Drag-and-drop status change: updates the board immediately (optimistic),
+  // and *attempts* to persist it to the backend. There's no confirmed
+  // "update ticket status" endpoint yet, so this guesses the conventional
+  // PATCH /tickets/:id shape. If that guess is wrong the request will just
+  // fail quietly (console-logged) and the board stays correct locally — but
+  // the change won't survive a refresh until the real endpoint is confirmed.
+  const handleTicketStatusChange = (ticketId: string, status: Ticket["status"]) => {
+    setStatusOverride(ticketId, status);
+    setRealTickets((prev) =>
+      (prev ?? project.tickets).map((t) => (t.id === ticketId ? { ...t, status } : t))
+    );
+    apiClient.patch(`/tickets/${ticketId}`, { status }).catch((err) => {
+      console.warn("Status change may not have been saved to the server:", err);
+    });
+  };
+
+  const displayedTickets = realTickets ?? project.tickets;
+
+  const open = displayedTickets.filter((t) => t.status === "Backlog" || t.status === "To Do").length;
+  const inProgress = displayedTickets.filter((t) => t.status === "In Progress").length;
+  const resolved = displayedTickets.filter((t) => t.status === "Done").length;
 
   const tabs: Tab[] = ["Summary", "Board", "Members"];
 
@@ -314,7 +358,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         showDashboardBtn
         breadcrumb={`/ ${project.name}`}
         searchPlaceholder="Search tickets..."
-        projectTickets={project.tickets}
+        projectTickets={displayedTickets}
         projectId={project.id}
       />
 
@@ -323,7 +367,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-slate-900 truncate">{project.name}</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              {project.ticketCount} tickets
+              {displayedTickets.length} tickets
+              {ticketsError && <span className="text-red-400"> · {ticketsError}</span>}
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -372,7 +417,13 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             resolved={resolved}
           />
         )}
-        {activeTab === "Board" && <KanbanBoard tickets={project.tickets} projectId={project.id} />}
+        {activeTab === "Board" && (
+          <KanbanBoard
+            tickets={displayedTickets}
+            projectId={project.id}
+            onStatusChange={handleTicketStatusChange}
+          />
+        )}
 
         {activeTab === "Members" && (
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">

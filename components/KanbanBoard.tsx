@@ -3,11 +3,11 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Ticket, TicketStatus, KANBAN_COLUMNS, PRIORITY_COLORS, STATUS_COLORS } from "@/lib/data";
-import { useApp } from "@/context/AppStore";
 
 interface KanbanBoardProps {
   tickets: Ticket[];
   projectId: string;
+  onStatusChange: (ticketId: string, status: TicketStatus) => void;
 }
 
 const PRIORITY_SHORT: Record<string, string> = {
@@ -16,8 +16,7 @@ const PRIORITY_SHORT: Record<string, string> = {
   Low: "L",
 };
 
-export default function KanbanBoard({ tickets, projectId }: KanbanBoardProps) {
-  const { updateTicketStatus } = useApp();
+export default function KanbanBoard({ tickets, projectId, onStatusChange }: KanbanBoardProps) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<TicketStatus | null>(null);
   const [filter, setFilter] = useState({ category: "", assignee: "", priority: "" });
@@ -37,7 +36,7 @@ export default function KanbanBoard({ tickets, projectId }: KanbanBoardProps) {
   const handleDragEnd = () => { setDragging(null); setOverCol(null); };
   const handleDrop = (status: TicketStatus) => {
     if (!dragging) return;
-    updateTicketStatus(projectId, dragging, status);
+    onStatusChange(dragging, status);
     setDragging(null);
     setOverCol(null);
   };
@@ -54,7 +53,7 @@ export default function KanbanBoard({ tickets, projectId }: KanbanBoardProps) {
           href={`/project/${projectId}/ticket/${ticket.id}`}
           className="text-[10px] font-bold text-slate-400 hover:text-violet-600 transition-colors font-mono leading-tight"
         >
-          {ticket.id}
+          {ticket.ticketNumber || ticket.id}
         </Link>
 
         {/* Mobile: show H / M / L */}
@@ -82,6 +81,21 @@ export default function KanbanBoard({ tickets, projectId }: KanbanBoardProps) {
           <span className="text-[10px] text-slate-400 truncate">{ticket.assignee}</span>
         </div>
       )}
+
+      {/* Explicit "move to" control — works even if drag-and-drop doesn't
+          (e.g. on touch devices, or browsers that block native HTML5 DnD) */}
+      <select
+        value={ticket.status}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => onStatusChange(ticket.id, e.target.value as TicketStatus)}
+        className="mt-2 w-full text-[10px] border border-slate-200 rounded px-1.5 py-1 bg-slate-50 text-slate-600 focus:outline-none focus:ring-1 focus:ring-violet-300"
+      >
+        {KANBAN_COLUMNS.map((col) => (
+          <option key={col} value={col}>
+            Move to: {col}
+          </option>
+        ))}
+      </select>
     </div>
   );
 

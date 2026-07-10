@@ -110,6 +110,7 @@ export interface Attachment {
   id: string;
   name: string;
   size: string;
+  commentId?: string | null;
 }
 
 export interface WorkLogEntry {

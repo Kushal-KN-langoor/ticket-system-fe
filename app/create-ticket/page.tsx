@@ -15,6 +15,28 @@ interface ProjectMember {
   role: string;
 }
 
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let val = bytes;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function extractErrorMessage(err: unknown, fallback: string) {
+  return (
+    (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+      ?.message ||
+    (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+      ?.error ||
+    fallback
+  );
+}
+
 function CreateTicketForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -36,14 +58,17 @@ function CreateTicketForm() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [apiError, setApiError] = useState("");
 
-  // Redirect if not logged in
+  // Files are only staged here — they can't actually be uploaded until the
+  // ticket exists, since /attachments requires a ticket_id.
+  const [files, setFiles] = useState<File[]>([]);
+  const [attachmentWarning, setAttachmentWarning] = useState("");
+
   useEffect(() => {
     if (!user) {
       router.replace("/");
     }
   }, [user, router]);
 
-  // Load real project members so "Assignee" has real user IDs, not fake names
   useEffect(() => {
     if (!projectId) return;
     apiClient
@@ -62,6 +87,7 @@ function CreateTicketForm() {
 
   const handleSubmit = async () => {
     setApiError("");
+    setAttachmentWarning("");
     const e = validate();
     if (Object.keys(e).length) {
       setErrors(e);
@@ -70,7 +96,7 @@ function CreateTicketForm() {
 
     setLoading(true);
     try {
-      await apiClient.post("/tickets", {
+      const res = await apiClient.post("/tickets", {
         title: form.title,
         description: form.description,
         status: "To Do",
@@ -81,18 +107,42 @@ function CreateTicketForm() {
         due_date: form.dueDate ? new Date(form.dueDate).toISOString() : undefined,
       });
 
+      const created = res.data?.ticket || res.data?.data || res.data;
+      const newTicketId: string | undefined = created?.id;
+
+      if (files.length > 0 && newTicketId) {
+        const results = await Promise.allSettled(
+          files.map((file) => {
+            const formData = new FormData();
+            formData.append("ticket_id", newTicketId);
+            formData.append("file", file);
+            return apiClient.post("/attachments", formData);
+          })
+        );
+        const failed = results.filter(
+          (r): r is PromiseRejectedResult => r.status === "rejected"
+        );
+        if (failed.length > 0) {
+          const firstReason = extractErrorMessage(
+            failed[0].reason,
+            "attachment upload failed"
+          );
+          setAttachmentWarning(
+            `Ticket created, but ${failed.length} of ${files.length} attachment(s) failed to upload (${firstReason}). You can retry from the ticket page.`
+          );
+        }
+      } else if (files.length > 0 && !newTicketId) {
+        setAttachmentWarning(
+          "Ticket created, but couldn't confirm its ID, so attachments weren't uploaded. Add them from the ticket page."
+        );
+      }
+
       setSubmitted(true);
       setTimeout(() => {
         router.push(`/project/${projectId}?tab=Board`);
-      }, 1200);
+      }, 1400);
     } catch (err: unknown) {
-      const message =
-        (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
-          ?.message ||
-        (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
-          ?.error ||
-        "Failed to create ticket. Please try again.";
-      setApiError(message);
+      setApiError(extractErrorMessage(err, "Failed to create ticket. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -109,7 +159,11 @@ function CreateTicketForm() {
           <span className="text-3xl text-emerald-600">✓</span>
         </div>
         <h2 className="text-xl font-bold text-slate-900 mb-2">Ticket Created!</h2>
-        <p className="text-slate-500 text-sm">Redirecting to project...</p>
+        {attachmentWarning ? (
+          <p className="text-amber-600 text-sm max-w-sm mx-auto">{attachmentWarning}</p>
+        ) : (
+          <p className="text-slate-500 text-sm">Redirecting to project...</p>
+        )}
       </div>
     );
   }
@@ -130,7 +184,6 @@ function CreateTicketForm() {
       </div>
 
       <div className="space-y-4">
-        {/* Title */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Title <span className="text-red-500">*</span>
@@ -147,7 +200,6 @@ function CreateTicketForm() {
           {errors.title && <p className="text-xs text-red-500 mt-1">{errors.title}</p>}
         </div>
 
-        {/* Description */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Description <span className="text-red-500">*</span>
@@ -164,7 +216,6 @@ function CreateTicketForm() {
           {errors.description && <p className="text-xs text-red-500 mt-1">{errors.description}</p>}
         </div>
 
-        {/* Priority */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Priority <span className="text-red-500">*</span>
@@ -192,7 +243,6 @@ function CreateTicketForm() {
           {errors.priority && <p className="text-xs text-red-500 mt-1">{errors.priority}</p>}
         </div>
 
-        {/* Assignee (real project members, real IDs) */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Assignee <span className="text-xs font-normal text-slate-400">(optional)</span>
@@ -211,7 +261,6 @@ function CreateTicketForm() {
           </select>
         </div>
 
-        {/* Due date */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Due Date <span className="text-xs font-normal text-slate-400">(optional)</span>
@@ -222,6 +271,48 @@ function CreateTicketForm() {
             onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
             className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300"
           />
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
+            Attachments <span className="text-xs font-normal text-slate-400">(optional)</span>
+          </label>
+          <label className="flex items-center justify-center gap-2 w-full px-3 py-3 text-sm border border-dashed border-slate-300 rounded-lg text-slate-500 hover:border-violet-300 hover:text-violet-600 cursor-pointer transition-colors">
+            <i className="fi fi-rr-paperclip text-sm"></i>
+            Click to add file(s)
+            <input
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []);
+                setFiles((prev) => [...prev, ...picked]);
+                e.target.value = "";
+              }}
+            />
+          </label>
+
+          {files.length > 0 && (
+            <div className="mt-2 space-y-1.5">
+              {files.map((f, idx) => (
+                <div
+                  key={`${f.name}-${idx}`}
+                  className="flex items-center justify-between text-xs bg-slate-50 border border-slate-100 rounded-lg px-3 py-2"
+                >
+                  <span className="text-slate-700 truncate flex-1 mr-2">
+                    📄 {f.name} <span className="text-slate-400">({formatBytes(f.size)})</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setFiles((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-red-500 hover:text-red-700 font-semibold shrink-0"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {apiError && <p className="text-xs text-red-500">{apiError}</p>}

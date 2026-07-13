@@ -96,13 +96,18 @@ function CreateTicketForm() {
 
     setLoading(true);
     try {
+      // Confirmed backend shape (verified via curl):
+      // POST /tickets { title, description, status, priority, project_id, ticket_order }
+      // assigned_to / due_date are sent as optional extras since the UI
+      // supports them — if the backend ignores or rejects them, they can
+      // be moved to a separate PATCH /tickets/:id call after creation.
       const res = await apiClient.post("/tickets", {
-        title: form.title,
-        description: form.description,
+        title: form.title.trim(),
+        description: form.description.trim(),
         status: "To Do",
         priority: form.priority,
-        ticket_order: "1",
         project_id: projectId,
+        ticket_order: "1",
         assigned_to: form.assignedTo || undefined,
         due_date: form.dueDate ? new Date(form.dueDate).toISOString() : undefined,
       });
@@ -116,7 +121,12 @@ function CreateTicketForm() {
             const formData = new FormData();
             formData.append("ticket_id", newTicketId);
             formData.append("file", file);
-            return apiClient.post("/attachments", formData);
+            // ⚠️ Must override Content-Type here — apiClient defaults to
+            // application/json, which breaks the multipart boundary and
+            // causes the backend to 400 this request.
+            return apiClient.post("/attachments", formData, {
+              headers: { "Content-Type": undefined },
+            });
           })
         );
         const failed = results.filter(

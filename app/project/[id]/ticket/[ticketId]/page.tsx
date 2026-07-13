@@ -39,17 +39,25 @@ function mapBackendComment(raw: BackendComment): Comment {
 }
 
 // Backend field names are unconfirmed for this endpoint, so every field is
-// read defensively with several possible aliases.
+// read defensively with several possible aliases. Widened after ticket-level
+// attachments weren't rendering — if the console debug log below shows a
+// field name not covered here, add it to the relevant alias chain.
 interface BackendAttachment {
   id?: string;
   _id?: string;
-  ticket_id?: string;
-  ticketId?: string;
+  attachment_id?: string;
+  ticket_id?: string | null;
+  ticketId?: string | null;
+  ticket?: { id?: string } | null;
   comment_id?: string | null;
   commentId?: string | null;
+  comment?: { id?: string } | null;
   file_name?: string;
   filename?: string;
   fileName?: string;
+  file_path?: string;
+  original_name?: string;
+  originalName?: string;
   name?: string;
   file_size?: number;
   fileSize?: number;
@@ -72,12 +80,29 @@ function formatBytes(bytes?: number): string {
   return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
+// Pulls a filename out of a full path if that's all the backend gave us
+// (e.g. "uploads/1720012345-report.pdf" -> "report.pdf").
+function basename(path?: string): string | undefined {
+  if (!path) return undefined;
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1] || undefined;
+}
+
 function mapBackendAttachment(raw: BackendAttachment): Attachment {
+  const commentId = raw.comment_id ?? raw.commentId ?? raw.comment?.id ?? null;
   return {
-    id: raw.id || raw._id || "",
-    name: raw.file_name || raw.filename || raw.fileName || raw.name || "Untitled file",
+    id: raw.id || raw._id || raw.attachment_id || "",
+    name:
+      raw.file_name ||
+      raw.filename ||
+      raw.fileName ||
+      raw.original_name ||
+      raw.originalName ||
+      raw.name ||
+      basename(raw.file_path) ||
+      "Untitled file",
     size: formatBytes(raw.file_size ?? raw.fileSize ?? raw.size),
-    commentId: raw.comment_id ?? raw.commentId ?? null,
+    commentId,
   };
 }
 
@@ -138,9 +163,6 @@ export default function TicketPage({
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [directUploading, setDirectUploading] = useState(false);
-  const directFileInputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     if (!user) {
       router.replace("/");
@@ -177,42 +199,74 @@ export default function TicketPage({
     };
   }, [id, ticketId, user]);
 
-  const fetchComments = useCallback(async () => {
+  // Returns the list of comment IDs it fetched, so callers can use them
+  // to also pull comment-level attachments in the same refresh cycle.
+  const fetchComments = useCallback(async (): Promise<string[]> => {
     setCommentsLoading(true);
     try {
       const res = await apiClient.get(`/tickets/${ticketId}/comments`);
       const raw: BackendComment[] = res.data?.comments || [];
-      setComments(raw.map(mapBackendComment));
+      const mapped = raw.map(mapBackendComment);
+      setComments(mapped);
+      return mapped.map((c) => c.id);
     } catch {
       // keep whatever we already have
+      return [];
     } finally {
       setCommentsLoading(false);
     }
   }, [ticketId]);
 
-  const fetchAttachments = useCallback(async () => {
-    setAttachmentsLoading(true);
-    try {
-      const res = await apiClient.get(`/attachments/ticket/${ticketId}`);
-      // TEMP DEBUG: check your browser console after uploading a file to
-      // see exactly what shape/field names the backend actually returns.
-      // eslint-disable-next-line no-console
-      console.log("raw attachments response:", res.data);
-      const raw = extractAttachmentArray(res.data);
-      setAttachments(raw.map(mapBackendAttachment));
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.log("attachments fetch failed:", err);
-      setAttachError((prev) => prev || "Could not refresh attachments list.");
-    } finally {
-      setAttachmentsLoading(false);
-    }
-  }, [ticketId]);
+  // Fetches BOTH ticket-level attachments (/attachments/ticket/:id) and
+  // comment-level attachments (/attachments/comment/:id) and merges them.
+  // commentIds must be passed in explicitly — pass whatever fetchComments()
+  // just returned.
+  const fetchAttachments = useCallback(
+    async (commentIds: string[] = []) => {
+      setAttachmentsLoading(true);
+      setAttachError("");
+      try {
+        const ticketRes = await apiClient.get(`/attachments/ticket/${ticketId}`);
+        // eslint-disable-next-line no-console
+        console.log("raw ticket attachments response:", ticketRes.data);
+        const ticketRaw = extractAttachmentArray(ticketRes.data);
+
+        let commentRaw: BackendAttachment[] = [];
+        if (commentIds.length > 0) {
+          const commentResults = await Promise.allSettled(
+            commentIds.map((cid) => apiClient.get(`/attachments/comment/${cid}`))
+          );
+          commentResults.forEach((r) => {
+            if (r.status === "fulfilled") {
+              // eslint-disable-next-line no-console
+              console.log("raw comment attachments response:", r.value.data);
+              commentRaw = commentRaw.concat(extractAttachmentArray(r.value.data));
+            } else {
+              // eslint-disable-next-line no-console
+              console.log("comment attachments fetch failed:", r.reason);
+            }
+          });
+        }
+
+        const merged = [...ticketRaw, ...commentRaw];
+        setAttachments(merged.map(mapBackendAttachment));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.log("attachments fetch failed:", err);
+        setAttachError("Could not refresh attachments list.");
+      } finally {
+        setAttachmentsLoading(false);
+      }
+    },
+    [ticketId]
+  );
 
   useEffect(() => {
     if (!user) return;
-    void fetchComments();
-    void fetchAttachments();
+    (async () => {
+      const commentIds = await fetchComments();
+      await fetchAttachments(commentIds);
+    })();
   }, [user, fetchComments, fetchAttachments]);
 
   const ticketLevelAttachments = useMemo(
@@ -278,10 +332,17 @@ export default function TicketPage({
           const results = await Promise.allSettled(
             draftFiles.map((file) => {
               const formData = new FormData();
-              formData.append("ticket_id", ticketId);
+              // Only comment_id is sent here — sending ticket_id at the
+              // same time causes the backend to file this under the ticket
+              // instead of (or as well as) the comment, or reject it outright.
               formData.append("comment_id", newCommentId);
               formData.append("file", file);
-              return apiClient.post("/attachments", formData);
+              // ⚠️ Must override Content-Type here — apiClient defaults to
+              // application/json, which breaks the multipart boundary and
+              // causes the backend to 400 this request.
+              return apiClient.post("/attachments", formData, {
+                headers: { "Content-Type": undefined },
+              });
             })
           );
           const failed = results.filter(
@@ -305,46 +366,12 @@ export default function TicketPage({
         setDraftFiles([]);
       }
 
-      await Promise.all([fetchComments(), fetchAttachments()]);
+      const commentIds = await fetchComments();
+      await fetchAttachments(commentIds);
     } catch (err: unknown) {
       setCommentError(extractErrorMessage(err, "Failed to post comment."));
     } finally {
       setSendingComment(false);
-    }
-  };
-
-  const handleDirectFilesPicked = async (fileList: FileList | null) => {
-    const picked = Array.from(fileList ?? []);
-    if (picked.length === 0) return;
-
-    setDirectUploading(true);
-    setAttachError("");
-    setAttachSuccess("");
-    try {
-      const results = await Promise.allSettled(
-        picked.map((file) => {
-          const formData = new FormData();
-          formData.append("ticket_id", ticketId);
-          formData.append("file", file);
-          return apiClient.post("/attachments", formData);
-        })
-      );
-      const failed = results.filter(
-        (r): r is PromiseRejectedResult => r.status === "rejected"
-      );
-      const succeededCount = results.length - failed.length;
-      if (failed.length > 0) {
-        const firstReason = extractErrorMessage(failed[0].reason, "upload failed");
-        setAttachError(
-          `${failed.length} of ${picked.length} attachment(s) failed to upload (${firstReason}).`
-        );
-      }
-      if (succeededCount > 0) {
-        setAttachSuccess(`${succeededCount} attachment(s) uploaded successfully.`);
-      }
-      await fetchAttachments();
-    } finally {
-      setDirectUploading(false);
     }
   };
 
@@ -484,56 +511,26 @@ export default function TicketPage({
             <p className="text-sm text-slate-600 leading-relaxed">{ticket.description}</p>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3 flex items-center gap-2">
-              📎 Ticket Attachments
-              {ticketLevelAttachments.length > 0 && (
-                <span className="text-slate-400 font-normal normal-case">
-                  ({ticketLevelAttachments.length})
-                </span>
-              )}
-            </h2>
-
-            {!attachmentsLoading && ticketLevelAttachments.length > 0 && (
-              <div className="mb-3">
-                {ticketLevelAttachments.map((a) => (
-                  <AttachmentRow key={a.id} a={a} />
-                ))}
-              </div>
-            )}
-            {attachmentsLoading && <p className="text-xs text-slate-400 mb-3">Loading attachments...</p>}
-            {!attachmentsLoading && ticketLevelAttachments.length === 0 && (
-              <p className="text-xs text-slate-400 mb-3">No files attached to this ticket yet.</p>
-            )}
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => directFileInputRef.current?.click()}
-                disabled={directUploading}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-slate-300 text-slate-500 hover:border-violet-300 hover:text-violet-600 transition-colors disabled:opacity-50"
-              >
-                {directUploading ? (
-                  <>
-                    <span className="w-3.5 h-3.5 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
-                    Uploading...
-                  </>
-                ) : (
-                  <>📎 Add file(s)</>
+          {/* Ticket Attachments — read-only. Files land here from either the
+              attachment picker on ticket creation, or from comments below.
+              There is deliberately no upload control on this page anymore;
+              adding a file is only possible from the comment box. */}
+          {(attachmentsLoading || ticketLevelAttachments.length > 0) && (
+            <div className="bg-white border border-slate-200 rounded-xl p-5">
+              <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3 flex items-center gap-2">
+                📎 Ticket Attachments
+                {ticketLevelAttachments.length > 0 && (
+                  <span className="text-slate-400 font-normal normal-case">
+                    ({ticketLevelAttachments.length})
+                  </span>
                 )}
-              </button>
-              <input
-                ref={directFileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  void handleDirectFilesPicked(e.target.files);
-                  e.target.value = "";
-                }}
-              />
+              </h2>
+
+              {attachmentsLoading && <p className="text-xs text-slate-400">Loading attachments...</p>}
+              {!attachmentsLoading &&
+                ticketLevelAttachments.map((a) => <AttachmentRow key={a.id} a={a} />)}
             </div>
-          </div>
+          )}
 
           <div className="bg-white border border-slate-200 rounded-xl p-5">
             <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-4">

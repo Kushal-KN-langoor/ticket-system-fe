@@ -4,12 +4,13 @@ import { useEffect, useState, use } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
-import SummaryTab from "@/components/SummaryTab";
+import SummaryTab, { TrendPoint, CategorySlice } from "@/components/SummaryTab";
 import KanbanBoard from "@/components/KanbanBoard";
 import { useApp } from "@/context/AppStore";
 import { useAppSelector } from "@/lib/redux/hooks";
 import { apiClient } from "@/lib/apiClient";
-import { Ticket } from "@/lib/data";
+import { Ticket, BackendTicket, mapBackendTicket } from "@/lib/data";
+import { applyStatusOverrides, setStatusOverride } from "@/lib/ticketStatusStore";
 
 type Tab = "Summary" | "Board" | "Members";
 type MemberMode = "new" | "existing";
@@ -27,6 +28,85 @@ interface ProjectMember {
   name: string;
   email: string;
   role: string;
+}
+
+// Backend field names for /summary/:id are unconfirmed, so every field is
+// read defensively with several possible aliases. If the console debug log
+// (search "raw summary response") shows a field name not covered here, add
+// it to the relevant alias chain below.
+interface BackendSummary {
+  total?: number;
+  total_tickets?: number;
+  totalTickets?: number;
+  open?: number;
+  open_tickets?: number;
+  openTickets?: number;
+  in_progress?: number;
+  inProgress?: number;
+  resolved?: number;
+  resolved_tickets?: number;
+  done?: number;
+  closed?: number;
+  trend?: Array<Record<string, unknown>>;
+  ticket_trend?: Array<Record<string, unknown>>;
+  trends?: Array<Record<string, unknown>>;
+  category?: Array<Record<string, unknown>>;
+  categories?: Array<Record<string, unknown>>;
+  category_breakdown?: Array<Record<string, unknown>>;
+  by_category?: Array<Record<string, unknown>>;
+  data?: BackendSummary;
+  summary?: BackendSummary;
+}
+
+interface SummaryState {
+  total: number;
+  open: number;
+  inProgress: number;
+  resolved: number;
+  trend: TrendPoint[];
+  categories: CategorySlice[];
+}
+
+// Unwraps {data: {...}} / {summary: {...}} nesting so we can read the
+// actual stats regardless of how the backend wraps the payload.
+function unwrapSummary(raw: BackendSummary): BackendSummary {
+  return raw.data ?? raw.summary ?? raw;
+}
+
+function extractArray(raw: BackendSummary, keys: (keyof BackendSummary)[]): Array<Record<string, unknown>> {
+  for (const key of keys) {
+    const val = raw[key];
+    if (Array.isArray(val)) return val as Array<Record<string, unknown>>;
+  }
+  return [];
+}
+
+function mapBackendSummary(payload: unknown): SummaryState {
+  const outer = (payload as BackendSummary) || {};
+  const raw = unwrapSummary(outer);
+
+  const trendRaw = extractArray(raw, ["trend", "ticket_trend", "trends"]);
+  const categoryRaw = extractArray(raw, ["category", "categories", "category_breakdown", "by_category"]);
+
+  const trend: TrendPoint[] = trendRaw.map((t) => ({
+    day: String(t.day ?? t.date ?? t.label ?? t.name ?? ""),
+    tickets: Number(t.tickets ?? t.count ?? t.total ?? 0),
+  }));
+
+  const categories: CategorySlice[] = categoryRaw.map((c) => ({
+    name: String(c.name ?? c.category ?? c.label ?? "Other"),
+    value: Number(c.value ?? c.count ?? c.total ?? 0),
+    color: typeof c.color === "string" ? c.color : undefined,
+  }));
+
+  return {
+    total: Number(raw.total ?? raw.total_tickets ?? raw.totalTickets ?? 0),
+    open: Number(raw.open ?? raw.open_tickets ?? raw.openTickets ?? 0),
+    inProgress: Number(raw.in_progress ?? raw.inProgress ?? 0),
+    resolved: Number(raw.resolved ?? raw.resolved_tickets ?? raw.done ?? raw.closed ?? 0),
+    trend,
+    categories,
+  };
 }
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
@@ -63,6 +143,16 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(true);
   const [membersError, setMembersError] = useState("");
+
+  // Real tickets from the backend, filtered down to this project.
+  // GET /api/tickets returns every ticket across every project — there's
+  // no project-scoped endpoint — so we fetch all and filter client-side.
+  const [realTickets, setRealTickets] = useState<Ticket[] | null>(null);
+  const [ticketsError, setTicketsError] = useState("");
+
+  const [summary, setSummary] = useState<SummaryState | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState("");
 
   const isAdmin = user?.role?.toLowerCase() === "admin";
 
@@ -168,6 +258,25 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     };
   }, [id, user, mockProjects]);
 
+  const fetchTickets = async () => {
+    setTicketsError("");
+    try {
+      const res = await apiClient.get("/tickets");
+      const all: BackendTicket[] = res.data?.tickets || [];
+      const mine = all.filter((t) => t.project_id === id).map(mapBackendTicket);
+      setRealTickets(applyStatusOverrides(mine));
+    } catch {
+      setTicketsError("Could not load tickets from the server.");
+      setRealTickets(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    void fetchTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, user]);
+
   const fetchMembers = async () => {
     setMembersLoading(true);
     setMembersError("");
@@ -191,6 +300,33 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   useEffect(() => {
     if (!user) return;
     void fetchMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, user]);
+
+  const fetchSummary = async () => {
+    setSummaryLoading(true);
+    setSummaryError("");
+    try {
+      const res = await apiClient.get(`/api/summary/${id}`);
+      // TEMP DEBUG: check your browser console to see the exact shape the
+      // backend returns — if stats/trend/categories look wrong on screen,
+      // paste this log and the field aliases in mapBackendSummary can be
+      // adjusted to match.
+      // eslint-disable-next-line no-console
+      console.log("raw summary response:", res.data);
+      setSummary(mapBackendSummary(res.data));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.log("summary fetch failed:", err);
+      setSummaryError("Could not load live summary data.");
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    void fetchSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, user]);
 
@@ -302,9 +438,27 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     );
   }
 
-  const open = project.tickets.filter((t) => t.status === "Backlog" || t.status === "To Do").length;
-  const inProgress = project.tickets.filter((t) => t.status === "In Progress").length;
-  const resolved = project.tickets.filter((t) => t.status === "Done").length;
+  // Drag-and-drop status change: updates the board immediately (optimistic),
+  // and *attempts* to persist it to the backend. There's no confirmed
+  // "update ticket status" endpoint yet, so this guesses the conventional
+  // PATCH /tickets/:id shape. If that guess is wrong the request will just
+  // fail quietly (console-logged) and the board stays correct locally — but
+  // the change won't survive a refresh until the real endpoint is confirmed.
+  const handleTicketStatusChange = (ticketId: string, status: Ticket["status"]) => {
+    setStatusOverride(ticketId, status);
+    setRealTickets((prev) =>
+      (prev ?? project.tickets).map((t) => (t.id === ticketId ? { ...t, status } : t))
+    );
+    apiClient.patch(`/tickets/${ticketId}`, { status }).catch((err) => {
+      console.warn("Status change may not have been saved to the server:", err);
+    });
+  };
+
+  const displayedTickets = realTickets ?? project.tickets;
+
+  const open = displayedTickets.filter((t) => t.status === "Backlog" || t.status === "To Do").length;
+  const inProgress = displayedTickets.filter((t) => t.status === "In Progress").length;
+  const resolved = displayedTickets.filter((t) => t.status === "Done").length;
 
   const tabs: Tab[] = ["Summary", "Board", "Members"];
 
@@ -314,7 +468,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         showDashboardBtn
         breadcrumb={`/ ${project.name}`}
         searchPlaceholder="Search tickets..."
-        projectTickets={project.tickets}
+        projectTickets={displayedTickets}
         projectId={project.id}
       />
 
@@ -323,11 +477,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-slate-900 truncate">{project.name}</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              {project.ticketCount} tickets
+              {displayedTickets.length} tickets
+              {ticketsError && <span className="text-red-400"> · {ticketsError}</span>}
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {isAdmin && (
+            {isAdmin && activeTab === "Members" && (
               <button
                 onClick={() => { resetMemberForm(); setMemberMode("new"); setShowAddMember(true); }}
                 className="flex items-center gap-1.5 text-sm font-semibold text-violet-700 border border-violet-200 bg-violet-50 hover:bg-violet-100 rounded-lg px-3 py-1.5 transition-colors"
@@ -336,13 +491,15 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 <span className="hidden sm:inline">Add Member</span>
               </button>
             )}
-            <Link
-              href={`/create-ticket?project=${project.id}&tab=${activeTab}&name=${encodeURIComponent(project.name)}&description=${encodeURIComponent(project.description || "")}`}
-              className="flex items-center gap-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-1.5 transition-colors shadow-sm shadow-violet-200"
-            >
-              <i className="fi fi-rr-plus text-sm"></i>
-              <span className="hidden sm:inline">Create Ticket</span>
-            </Link>
+            {activeTab === "Board" && (
+              <Link
+                href={`/create-ticket?project=${project.id}&tab=Board&name=${encodeURIComponent(project.name)}&description=${encodeURIComponent(project.description || "")}`}
+                className="flex items-center gap-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-1.5 transition-colors shadow-sm shadow-violet-200"
+              >
+                <i className="fi fi-rr-plus text-sm"></i>
+                <span className="hidden sm:inline">Create Ticket</span>
+              </Link>
+            )}
           </div>
         </div>
 
@@ -364,13 +521,23 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
         {activeTab === "Summary" && (
           <SummaryTab
-            total={project.ticketCount}
-            open={open}
-            inProgress={inProgress}
-            resolved={resolved}
+            total={summary?.total ?? displayedTickets.length}
+            open={summary?.open ?? open}
+            inProgress={summary?.inProgress ?? inProgress}
+            resolved={summary?.resolved ?? resolved}
+            trend={summary?.trend}
+            categories={summary?.categories}
+            loading={summaryLoading}
+            error={summaryError}
           />
         )}
-        {activeTab === "Board" && <KanbanBoard tickets={project.tickets} projectId={project.id} />}
+        {activeTab === "Board" && (
+          <KanbanBoard
+            tickets={displayedTickets}
+            projectId={project.id}
+            onStatusChange={handleTicketStatusChange}
+          />
+        )}
 
         {activeTab === "Members" && (
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">

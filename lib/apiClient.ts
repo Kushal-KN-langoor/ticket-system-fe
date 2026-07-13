@@ -55,6 +55,16 @@ apiClient.interceptors.request.use((config) => {
     config.url = config.url.replace(/^\/api/, "");
   }
 
+  // FormData (file uploads) needs the browser to set its own
+  // multipart/form-data boundary. The instance default forces
+  // "application/json" on every request, so relying on callers to pass
+  // `{ "Content-Type": undefined }` per-call is fragile. Do it centrally
+  // here instead — any request whose body is FormData gets its
+  // Content-Type header deleted before it goes out.
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    config.headers.delete("Content-Type");
+  }
+
   return config;
 });
 

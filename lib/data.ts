@@ -1,14 +1,16 @@
-export type Priority = "High" | "Medium" | "Low";
+export type Priority = "High" | "Medium" | "Low" | "Critical";
 export type TicketStatus = "Backlog" | "To Do" | "In Progress" | "Review" | "Done";
 export type ProjectStatus = "In Progress" | "Active" | "Completed";
 
 export interface Ticket {
   id: string;
+  ticketNumber?: string;
   title: string;
   category: string;
   priority: Priority;
   status: TicketStatus;
   assignee: string;
+  assignedToId?: string | null;
   reporter: string;
   createdAt: string;
   updatedAt: string;
@@ -19,6 +21,82 @@ export interface Ticket {
   estimatedTime: string;
   timeSpent: string;
   remaining: string;
+}
+
+// ---- Backend -> frontend ticket mapping ----
+// The backend's GET /api/tickets returns ALL tickets (no project filter) with
+// its own field names (snake_case, nested user objects, etc). This adapts
+// one raw ticket object from that response into the shape the UI expects.
+// Any backend status/priority we don't recognize falls back to a safe default
+// instead of crashing the Kanban board or the filters.
+const KNOWN_STATUSES: TicketStatus[] = ["Backlog", "To Do", "In Progress", "Review", "Done"];
+const KNOWN_PRIORITIES: Priority[] = ["Low", "Medium", "High", "Critical"];
+
+export function normalizeStatus(raw: string | null | undefined): TicketStatus {
+  if (raw && (KNOWN_STATUSES as string[]).includes(raw)) return raw as TicketStatus;
+  return "Backlog"; // covers legacy/unexpected values like "Open"
+}
+
+export function normalizePriority(raw: string | null | undefined): Priority {
+  if (raw && (KNOWN_PRIORITIES as string[]).includes(raw)) return raw as Priority;
+  return "Medium";
+}
+
+// Minimal shape of one item from the backend's tickets array — only the
+// fields we actually read are typed, everything else is ignored.
+export interface BackendTicket {
+  id: string;
+  ticket_number?: string;
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  project_id: string;
+  created_at?: string;
+  updated_at?: string;
+  due_date?: string | null;
+  assigned_to?: string | null;
+  users_tickets_assigned_toTousers?: { id: string; name: string; email: string } | null;
+  users_tickets_created_byTousers?: { id: string; name: string; email: string } | null;
+  comments?: Array<{ id: string; user_id: string; comment_text: string; created_at: string }>;
+  attachments?: Array<{ id: string; file_name: string }>;
+}
+
+export function mapBackendTicket(raw: BackendTicket): Ticket {
+  return {
+    id: raw.id,
+    ticketNumber: raw.ticket_number,
+    title: raw.title,
+    category: "",
+    priority: normalizePriority(raw.priority),
+    status: normalizeStatus(raw.status),
+    assignee: raw.users_tickets_assigned_toTousers?.name || "Unassigned",
+    assignedToId: raw.assigned_to ?? null,
+    reporter: raw.users_tickets_created_byTousers?.name || "Unknown",
+    createdAt: raw.created_at ? new Date(raw.created_at).toLocaleString() : "",
+    updatedAt: raw.updated_at ? new Date(raw.updated_at).toLocaleString() : "",
+    description: raw.description || "",
+    comments: (raw.comments || []).map((c) => ({
+      id: c.id,
+      author:
+        c.user_id === raw.users_tickets_created_byTousers?.id
+          ? raw.users_tickets_created_byTousers?.name || "User"
+          : c.user_id === raw.users_tickets_assigned_toTousers?.id
+          ? raw.users_tickets_assigned_toTousers?.name || "User"
+          : "User",
+      text: c.comment_text,
+      timestamp: new Date(c.created_at).toLocaleString(),
+    })),
+    attachments: (raw.attachments || []).map((a) => ({
+      id: a.id,
+      name: a.file_name,
+      size: "",
+    })),
+    workLog: [],
+    estimatedTime: "-",
+    timeSpent: "-",
+    remaining: "-",
+  };
 }
 
 export interface Comment {
@@ -32,6 +110,7 @@ export interface Attachment {
   id: string;
   name: string;
   size: string;
+  commentId?: string | null;
 }
 
 export interface WorkLogEntry {
@@ -166,6 +245,7 @@ export function getTicket(projectId: string, ticketId: string): Ticket | undefin
 }
 
 export const PRIORITY_COLORS: Record<Priority, string> = {
+  Critical: "bg-purple-100 text-purple-700 border-purple-200",
   High: "bg-red-100 text-red-700 border-red-200",
   Medium: "bg-amber-100 text-amber-700 border-amber-200",
   Low: "bg-green-100 text-green-700 border-green-200",

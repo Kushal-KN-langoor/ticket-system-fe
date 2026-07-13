@@ -90,6 +90,10 @@ export default function Navbar({
     setSearchResults(results.slice(0, 6));
   };
 
+  // Short, readable token for display instead of the full UUID —
+  // e.g. "7b50d435" from "7b50d435-ecc4-42f8-bdf4-21d50c588fdd".
+  const shortToken = (id: string) => id.split("-")[0].toUpperCase();
+
   const startEditName = () => {
     setNameInput(user?.name || "");
     setEditingName(true);
@@ -160,10 +164,12 @@ export default function Navbar({
                     key={r.id}
                     href={`/project/${r.projectId}/ticket/${r.id}`}
                     onClick={() => { setSearchQuery(""); setSearchResults([]); }}
-                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-violet-50 transition-colors"
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-violet-50 transition-colors"
                   >
-                    <span className="font-mono text-violet-600 font-bold text-xs shrink-0">{r.id}</span>
-                    <span className="text-sm text-slate-700 truncate">{r.title}</span>
+                    <span className="text-sm text-slate-700 font-medium truncate">{r.title}</span>
+                    <span className="font-mono text-violet-600 font-bold text-[10px] shrink-0">
+                      #{shortToken(r.id)}
+                    </span>
                   </Link>
                 ))}
               </div>

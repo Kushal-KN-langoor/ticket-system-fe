@@ -32,7 +32,9 @@ export default function Navbar({
   const [userOpen, setUserOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<{ id: string; title: string; projectId: string }[]>([]);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
@@ -48,6 +50,10 @@ export default function Navbar({
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setSearchResults([]);
         setSearchQuery("");
+        setMobileSearchOpen(false);
+      }
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -119,7 +125,7 @@ export default function Navbar({
 
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-40">
-      <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-6 h-14">
+      <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-6 h-14 relative">
 
         <Link href="/dashboard" className="flex items-center gap-2 font-bold text-violet-700 text-lg shrink-0">
           <div className="w-8 h-8 bg-violet-600 rounded-lg flex items-center justify-center text-white text-sm font-bold">H</div>
@@ -145,44 +151,77 @@ export default function Navbar({
         <div className="flex-1" />
 
         {showSearch && (
-          <div className="relative hidden sm:flex items-center" ref={searchRef}>
-            <i className="fi fi-rr-search text-sm absolute left-3 text-slate-400 z-10"></i>
-            <input
-              type="text"
-              placeholder={searchPlaceholder}
-              value={searchQuery}
-              onChange={(e) => handleSearch(e.target.value)}
-              className="pl-8 pr-4 py-1.5 text-sm bg-slate-50 border border-slate-200 rounded-lg w-52 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
-            />
-            {searchResults.length > 0 && (
-              <div className="absolute top-9 left-0 w-80 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-200 z-50 py-1 overflow-hidden">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-4 py-2">
-                  Tickets
-                </p>
-                {searchResults.map((r) => (
-                  <Link
-                    key={r.id}
-                    href={`/project/${r.projectId}/ticket/${r.id}`}
-                    onClick={() => { setSearchQuery(""); setSearchResults([]); }}
-                    className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-violet-50 transition-colors"
-                  >
-                    <span className="text-sm text-slate-700 font-medium truncate">{r.title}</span>
-                    <span className="font-mono text-violet-600 font-bold text-[10px] shrink-0">
-                      #{shortToken(r.id)}
-                    </span>
-                  </Link>
-                ))}
+          <>
+            {/* Mobile: icon button that toggles the search bar */}
+            <button
+              onClick={() => setMobileSearchOpen((v) => !v)}
+              className="sm:hidden flex items-center justify-center p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors shrink-0"
+            >
+              <i className={`fi ${mobileSearchOpen ? "fi-rr-cross" : "fi-rr-search"} text-sm`}></i>
+            </button>
+
+            {/* Search box: inline on sm+, dropdown panel on mobile when toggled open */}
+            <div
+              ref={searchRef}
+              className={`
+                items-center
+                sm:relative sm:flex sm:w-auto sm:top-auto sm:left-auto sm:right-auto sm:px-0 sm:border-0 sm:shadow-none sm:bg-transparent
+                ${mobileSearchOpen
+                  ? "flex absolute left-0 right-0 top-14 px-3 py-2 z-50 bg-white border-b border-slate-200 shadow-lg"
+                  : "hidden"}
+              `}
+            >
+              <div className="relative w-full sm:w-52">
+                <i className="fi fi-rr-search text-sm absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 z-10"></i>
+                <input
+                  type="text"
+                  name="ticket-search"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder={searchPlaceholder}
+                  value={searchQuery}
+                  onChange={(e) => handleSearch(e.target.value)}
+                  autoFocus={mobileSearchOpen}
+                  className="pl-8 pr-4 py-1.5 text-sm bg-slate-50 border border-slate-200 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                />
+
+                {searchResults.length > 0 && (
+                  <div className="absolute top-10 left-0 right-0 sm:left-auto sm:right-0 sm:w-80 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-200 z-50 py-1 overflow-hidden">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-4 py-2">
+                      Tickets
+                    </p>
+                    {searchResults.map((r) => (
+                      <Link
+                        key={r.id}
+                        href={`/project/${r.projectId}/ticket/${r.id}`}
+                        onClick={() => {
+                          setSearchQuery("");
+                          setSearchResults([]);
+                          setMobileSearchOpen(false);
+                        }}
+                        className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-violet-50 transition-colors"
+                      >
+                        <span className="text-sm text-slate-700 font-medium truncate">{r.title}</span>
+                        <span className="font-mono text-violet-600 font-bold text-[10px] shrink-0">
+                          #{shortToken(r.id)}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+
+                {searchQuery.trim() && searchResults.length === 0 && (
+                  <div className="absolute top-10 left-0 right-0 sm:left-auto sm:right-0 sm:w-80 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-200 z-50 py-4 text-center">
+                    <p className="text-sm text-slate-400">No tickets found for &quot;{searchQuery}&quot;</p>
+                  </div>
+                )}
               </div>
-            )}
-            {searchQuery.trim() && searchResults.length === 0 && (
-              <div className="absolute top-9 left-0 w-80 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-200 z-50 py-4 text-center">
-                <p className="text-sm text-slate-400">No tickets found for &quot;{searchQuery}&quot;</p>
-              </div>
-            )}
-          </div>
+            </div>
+          </>
         )}
 
-        <div className="relative shrink-0">
+        <div className="relative shrink-0" ref={userMenuRef}>
           <button
             onClick={() => setUserOpen(!userOpen)}
             className="flex items-center gap-2 p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"

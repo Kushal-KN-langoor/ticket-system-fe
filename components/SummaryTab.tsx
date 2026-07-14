@@ -32,6 +32,12 @@ interface SummaryTabProps {
   error?: string;
 }
 
+const DAY_NAMES: Record<string | number, string> = {
+  1:  "Mon", 2:  "Tue", 3:  "Wed", 4:  "Thu", 5:  "Fri", 6:  "Sat", 7:  "Sun",
+  8:  "Mon", 9:  "Tue", 10: "Sun", 11: "Mon", 12: "Tue", 13: "Wed",
+  14: "Thu", 15: "Fri", 16: "Sat", 17: "Sun",
+};
+
 type CustomTooltipProps = {
   active?: boolean;
   label?: string | number;
@@ -69,13 +75,22 @@ export default function SummaryTab({
     { label: "Resolved",      value: resolved,    color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-200" },
   ];
 
-  // Backend already returns day labels (e.g. "Mon", "Tue") directly, so
-  // no client-side translation is needed — just use trend as-is.
+  // Only use real trend data from the backend. If it's empty, we show an
+  // empty state instead of fake numbers — showing mock data here would be
+  // misleading since it doesn't reflect what's actually happening.
   const hasTrendData = !!trend && trend.length > 0;
-  const trendData = trend ?? [];
 
-  const maxTickets = trendData.length > 0
-    ? Math.max(...trendData.map((d) => d.tickets))
+  const trendWithDayNames = (trend ?? []).map((d) => {
+    const raw = String(d.day).trim();
+    const numeric = parseInt(raw.split(" ")[0], 10);
+    return {
+      ...d,
+      dayLabel: !isNaN(numeric) ? (DAY_NAMES[numeric] ?? raw) : raw,
+    };
+  });
+
+  const maxTickets = trendWithDayNames.length > 0
+    ? Math.max(...trendWithDayNames.map((d) => d.tickets))
     : 0;
 
   return (
@@ -123,7 +138,7 @@ export default function SummaryTab({
           ) : hasTrendData ? (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart
-                data={trendData}
+                data={trendWithDayNames}
                 margin={{ top: 20, right: 8, left: 8, bottom: 0 }}
                 barCategoryGap="30%"
               >
@@ -134,7 +149,7 @@ export default function SummaryTab({
                   </linearGradient>
                 </defs>
                 <XAxis
-                  dataKey="day"
+                  dataKey="dayLabel"
                   tick={{ fontSize: 12, fill: "#94a3b8", fontWeight: 600 }}
                   axisLine={false}
                   tickLine={false}

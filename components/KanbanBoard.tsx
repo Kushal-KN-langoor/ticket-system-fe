@@ -19,18 +19,27 @@ const PRIORITY_SHORT: Record<string, string> = {
 export default function KanbanBoard({ tickets, projectId, onStatusChange }: KanbanBoardProps) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<TicketStatus | null>(null);
-  const [filter, setFilter] = useState({ category: "", assignee: "", priority: "" });
+  const [filter, setFilter] = useState({ assignee: "", priority: "" });
+
+  // Use a stable key per assignee (their id when we have one, otherwise the
+  // name) so two different tickets assigned to the same person always match,
+  // and so the dropdown works even for "Unassigned" tickets.
+  const assigneeKey = (t: Ticket) => t.assignedToId || t.assignee;
 
   const filtered = tickets.filter((t) => {
-    if (filter.category && t.category !== filter.category) return false;
     if (filter.priority && t.priority !== filter.priority) return false;
-    if (filter.assignee && t.assignee !== filter.assignee) return false;
+    if (filter.assignee && assigneeKey(t) !== filter.assignee) return false;
     return true;
   });
 
   const byStatus = (status: TicketStatus) => filtered.filter((t) => t.status === status);
-  const categories = [...new Set(tickets.map((t) => t.category))];
-  const assignees = [...new Set(tickets.map((t) => t.assignee).filter((a) => a !== "Unassigned"))];
+
+  // De-duplicated list of { key, label } assignee options, built from the
+  // full ticket list (not the already-filtered one) so the dropdown always
+  // shows every possible choice.
+  const assignees = Array.from(
+    new Map(tickets.map((t) => [assigneeKey(t), t.assignee])).entries()
+  ).map(([key, label]) => ({ key, label }));
 
   const handleDragStart = (id: string) => setDragging(id);
   const handleDragEnd = () => { setDragging(null); setOverCol(null); };
@@ -108,21 +117,14 @@ export default function KanbanBoard({ tickets, projectId, onStatusChange }: Kanb
         style={{ scrollbarWidth: "none" } as React.CSSProperties}
       >
         <select
-          value={filter.category}
-          onChange={(e) => setFilter({ ...filter, category: e.target.value })}
-          className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-300 shrink-0 min-w-max"
-        >
-          <option value="">All Categories</option>
-          {categories.map((c) => <option key={c}>{c}</option>)}
-        </select>
-
-        <select
           value={filter.assignee}
           onChange={(e) => setFilter({ ...filter, assignee: e.target.value })}
           className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-300 shrink-0 min-w-max"
         >
           <option value="">All Assignees</option>
-          {assignees.map((a) => <option key={a}>{a}</option>)}
+          {assignees.map((a) => (
+            <option key={a.key} value={a.key}>{a.label}</option>
+          ))}
         </select>
 
         <select
@@ -136,9 +138,9 @@ export default function KanbanBoard({ tickets, projectId, onStatusChange }: Kanb
           <option>Low</option>
         </select>
 
-        {(filter.category || filter.priority || filter.assignee) && (
+        {(filter.priority || filter.assignee) && (
           <button
-            onClick={() => setFilter({ category: "", assignee: "", priority: "" })}
+            onClick={() => setFilter({ assignee: "", priority: "" })}
             className="text-xs text-red-500 hover:text-red-700 px-2 shrink-0 min-w-max"
           >
             Clear filters

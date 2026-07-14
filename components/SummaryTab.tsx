@@ -9,17 +9,9 @@ import {
   ResponsiveContainer,
   LabelList,
 } from "recharts";
-import { TREND_DATA } from "@/lib/data";
-
 export interface TrendPoint {
   day: string;
   tickets: number;
-}
-
-export interface CategorySlice {
-  name: string;
-  value: number;
-  color?: string;
 }
 
 interface SummaryTabProps {
@@ -28,16 +20,29 @@ interface SummaryTabProps {
   inProgress: number;
   resolved: number;
   trend?: TrendPoint[];
-  categories?: CategorySlice[];
   loading?: boolean;
   error?: string;
 }
 
-const DAY_NAMES: Record<string | number, string> = {
-  1:  "Mon", 2:  "Tue", 3:  "Wed", 4:  "Thu", 5:  "Fri", 6:  "Sat", 7:  "Sun",
-  8:  "Mon", 9:  "Tue", 10: "Sun", 11: "Mon", 12: "Tue", 13: "Wed",
-  14: "Thu", 15: "Fri", 16: "Sat", 17: "Sun",
-};
+// Derives a short weekday label ("Mon", "Tue"...) from whatever date format
+// the backend sends for a trend point. Handles full ISO dates
+// ("2026-07-10"), "10 May" style strings (assumes the current year), and
+// falls back to the raw value untouched if it isn't a parseable date at all
+// (e.g. the backend already sends "Sun" or a plain day-of-month number with
+// no way to resolve which weekday that actually was).
+function getDayLabel(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+
+  let date = new Date(trimmed);
+  if (isNaN(date.getTime())) {
+    date = new Date(`${trimmed} ${new Date().getFullYear()}`);
+  }
+
+  return !isNaN(date.getTime())
+    ? date.toLocaleDateString("en-US", { weekday: "short" })
+    : trimmed;
+}
 
 type CustomTooltipProps = {
   active?: boolean;
@@ -76,20 +81,17 @@ export default function SummaryTab({
     { label: "Resolved",      value: resolved,    color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-200" },
   ];
 
-  // Fall back to mock data only if the backend didn't give us anything
-  // usable for that particular chart — keeps the page from going blank
-  // while the summary endpoint is still loading or if it's partial.
-  const trendSource = trend && trend.length > 0 ? trend : TREND_DATA;
+  // trend is always real data by the time it gets here — either from the
+  // backend's /summary endpoint, or computed client-side from the user's
+  // actual tickets as a fallback (see ProjectPage). No mock data.
+  const trendSource = trend ?? [];
 
-  // Safely extract numeric day from any format: 10, "10", "10 May", "Sun" etc.
-  const trendWithDayNames = trendSource.map((d) => {
-    const raw = String(d.day).trim();
-    const numeric = parseInt(raw.split(" ")[0], 10);
-    return {
-      ...d,
-      dayLabel: !isNaN(numeric) ? (DAY_NAMES[numeric] ?? raw) : raw,
-    };
-  });
+  // Safely resolve a weekday label from whatever format the backend sends:
+  // ISO date, "10 May", plain "10", "Sun", etc.
+  const trendWithDayNames = trendSource.map((d) => ({
+    ...d,
+    dayLabel: getDayLabel(String(d.day ?? "")),
+  }));
 
   const maxTickets = trendWithDayNames.length > 0
     ? Math.max(...trendWithDayNames.map((d) => d.tickets))

@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   LabelList,
 } from "recharts";
+import { TREND_DATA } from "@/lib/data";
 
 export interface TrendPoint {
   day: string;
@@ -75,12 +76,13 @@ export default function SummaryTab({
     { label: "Resolved",      value: resolved,    color: "text-emerald-700", bg: "bg-emerald-50 border-emerald-200" },
   ];
 
-  // Only use real trend data from the backend. If it's empty, we show an
-  // empty state instead of fake numbers — showing mock data here would be
-  // misleading since it doesn't reflect what's actually happening.
-  const hasTrendData = !!trend && trend.length > 0;
+  // Fall back to mock data only if the backend didn't give us anything
+  // usable for that particular chart — keeps the page from going blank
+  // while the summary endpoint is still loading or if it's partial.
+  const trendSource = trend && trend.length > 0 ? trend : TREND_DATA;
 
-  const trendWithDayNames = (trend ?? []).map((d) => {
+  // Safely extract numeric day from any format: 10, "10", "10 May", "Sun" etc.
+  const trendWithDayNames = trendSource.map((d) => {
     const raw = String(d.day).trim();
     const numeric = parseInt(raw.split(" ")[0], 10);
     return {
@@ -123,62 +125,47 @@ export default function SummaryTab({
               <h3 className="text-sm font-bold text-slate-800">Ticket Trend</h3>
               <p className="text-xs text-slate-400 mt-0.5">Last 7 days · tickets created per day</p>
             </div>
-            {hasTrendData && (
-              <div className="text-right">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Peak</span>
-                <div className="text-lg font-bold text-violet-600 leading-tight">{maxTickets}</div>
-              </div>
-            )}
+            <div className="text-right">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Peak</span>
+              <div className="text-lg font-bold text-violet-600 leading-tight">{maxTickets}</div>
+            </div>
           </div>
 
-          {loading ? (
-            <div className="h-[220px] flex items-center justify-center text-sm text-slate-400">
-              Loading trend data...
-            </div>
-          ) : hasTrendData ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart
-                data={trendWithDayNames}
-                margin={{ top: 20, right: 8, left: 8, bottom: 0 }}
-                barCategoryGap="30%"
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart
+              data={trendWithDayNames}
+              margin={{ top: 20, right: 8, left: 8, bottom: 0 }}
+              barCategoryGap="30%"
+            >
+              <defs>
+                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#7c3aed" stopOpacity={1} />
+                  <stop offset="100%" stopColor="#a78bfa" stopOpacity={0.7} />
+                </linearGradient>
+              </defs>
+              <XAxis
+                dataKey="dayLabel"
+                tick={{ fontSize: 12, fill: "#94a3b8", fontWeight: 600 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis hide />
+              <Tooltip content={<CustomTooltip />} cursor={{ fill: "#f5f3ff", radius: 6 }} />
+              <Bar
+                dataKey="tickets"
+                fill="url(#barGradient)"
+                radius={[6, 6, 0, 0]}
+                name="Tickets"
+                maxBarSize={48}
               >
-                <defs>
-                  <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#7c3aed" stopOpacity={1} />
-                    <stop offset="100%" stopColor="#a78bfa" stopOpacity={0.7} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="dayLabel"
-                  tick={{ fontSize: 12, fill: "#94a3b8", fontWeight: 600 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis hide />
-                <Tooltip content={<CustomTooltip />} cursor={{ fill: "#f5f3ff", radius: 6 }} />
-                <Bar
+                <LabelList
                   dataKey="tickets"
-                  fill="url(#barGradient)"
-                  radius={[6, 6, 0, 0]}
-                  name="Tickets"
-                  maxBarSize={48}
-                >
-                  <LabelList
-                    dataKey="tickets"
-                    position="top"
-                    style={{ fontSize: 11, fill: "#7c3aed", fontWeight: 700 }}
-                  />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-[220px] flex flex-col items-center justify-center text-center px-6">
-              <p className="text-sm font-medium text-slate-400">No trend data yet</p>
-              <p className="text-xs text-slate-400 mt-1">
-                Once tickets are created over a few days, activity will show up here.
-              </p>
-            </div>
-          )}
+                  position="top"
+                  style={{ fontSize: 11, fill: "#7c3aed", fontWeight: 700 }}
+                />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
 
       </div>

@@ -24,20 +24,25 @@ interface SummaryTabProps {
   error?: string;
 }
 
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 // Derives a short weekday label ("Mon", "Tue"...) from whatever date format
 // the backend sends for a trend point. Handles full ISO dates
 // ("2026-07-10"), "10 May" style strings (assumes the current year), and
-// falls back to the raw value untouched if it isn't a parseable date at all
-// (e.g. the backend already sends "Sun" or a plain day-of-month number with
-// no way to resolve which weekday that actually was).
+// leaves the value untouched if the backend already sent a plain weekday
+// name ("Thu", "Sun", etc.) — trying to re-parse an already-short weekday
+// string via `new Date(...)` is unreliable: JS silently drops the unknown
+// weekday token and keeps only the year, so every label collapses to
+// whatever weekday January 1st of the current year happens to be.
 function getDayLabel(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
 
-  let date = new Date(trimmed);
-  if (isNaN(date.getTime())) {
-    date = new Date(`${trimmed} ${new Date().getFullYear()}`);
+  if (WEEKDAY_NAMES.some((w) => w.toLowerCase() === trimmed.toLowerCase())) {
+    return trimmed;
   }
+
+  const date = new Date(trimmed);
 
   return !isNaN(date.getTime())
     ? date.toLocaleDateString("en-US", { weekday: "short" })

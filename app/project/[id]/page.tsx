@@ -4,7 +4,7 @@ import { useEffect, useState, use } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
-import SummaryTab, { TrendPoint, CategorySlice } from "@/components/SummaryTab";
+import SummaryTab, { TrendPoint } from "@/components/SummaryTab";
 import KanbanBoard from "@/components/KanbanBoard";
 import { useApp } from "@/context/AppStore";
 import { useAppSelector } from "@/lib/redux/hooks";
@@ -50,10 +50,6 @@ interface BackendSummary {
   trend?: Array<Record<string, unknown>>;
   ticket_trend?: Array<Record<string, unknown>>;
   trends?: Array<Record<string, unknown>>;
-  category?: Array<Record<string, unknown>>;
-  categories?: Array<Record<string, unknown>>;
-  category_breakdown?: Array<Record<string, unknown>>;
-  by_category?: Array<Record<string, unknown>>;
   data?: BackendSummary;
   summary?: BackendSummary;
 }
@@ -64,7 +60,6 @@ interface SummaryState {
   inProgress: number;
   resolved: number;
   trend: TrendPoint[];
-  categories: CategorySlice[];
 }
 
 // Unwraps {data: {...}} / {summary: {...}} nesting so we can read the
@@ -86,17 +81,10 @@ function mapBackendSummary(payload: unknown): SummaryState {
   const raw = unwrapSummary(outer);
 
   const trendRaw = extractArray(raw, ["trend", "ticket_trend", "trends"]);
-  const categoryRaw = extractArray(raw, ["category", "categories", "category_breakdown", "by_category"]);
 
   const trend: TrendPoint[] = trendRaw.map((t) => ({
     day: String(t.day ?? t.date ?? t.label ?? t.name ?? ""),
     tickets: Number(t.tickets ?? t.count ?? t.total ?? 0),
-  }));
-
-  const categories: CategorySlice[] = categoryRaw.map((c) => ({
-    name: String(c.name ?? c.category ?? c.label ?? "Other"),
-    value: Number(c.value ?? c.count ?? c.total ?? 0),
-    color: typeof c.color === "string" ? c.color : undefined,
   }));
 
   return {
@@ -105,8 +93,30 @@ function mapBackendSummary(payload: unknown): SummaryState {
     inProgress: Number(raw.in_progress ?? raw.inProgress ?? 0),
     resolved: Number(raw.resolved ?? raw.resolved_tickets ?? raw.done ?? raw.closed ?? 0),
     trend,
-    categories,
   };
+}
+
+// Builds a real last-7-days trend from the user's actual tickets, used
+// whenever the backend's /summary endpoint doesn't supply trend data
+// itself. Each bucket is a real calendar date (not a hardcoded weekday),
+// so it's correct no matter what day it's viewed on.
+function computeTrendFromTickets(tickets: BackendTicket[]): TrendPoint[] {
+  const days: string[] = [];
+  const now = new Date();
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    days.push(d.toISOString().slice(0, 10)); // "YYYY-MM-DD"
+  }
+
+  const counts = new Map<string, number>(days.map((d) => [d, 0]));
+  tickets.forEach((t) => {
+    if (!t.created_at) return;
+    const key = new Date(t.created_at).toISOString().slice(0, 10);
+    if (counts.has(key)) counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+
+  return days.map((day) => ({ day, tickets: counts.get(day) ?? 0 }));
 }
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
@@ -149,6 +159,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   // no project-scoped endpoint — so we fetch all and filter client-side.
   const [realTickets, setRealTickets] = useState<Ticket[] | null>(null);
   const [ticketsError, setTicketsError] = useState("");
+  const [computedTrend, setComputedTrend] = useState<TrendPoint[]>([]);
 
   const [summary, setSummary] = useState<SummaryState | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -263,8 +274,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     try {
       const res = await apiClient.get("/tickets");
       const all: BackendTicket[] = res.data?.tickets || [];
-      const mine = all.filter((t) => t.project_id === id).map(mapBackendTicket);
-      setRealTickets(applyStatusOverrides(mine));
+      const mine = all.filter((t) => t.project_id === id);
+      setRealTickets(applyStatusOverrides(mine.map(mapBackendTicket)));
+      setComputedTrend(computeTrendFromTickets(mine));
     } catch {
       setTicketsError("Could not load tickets from the server.");
       setRealTickets(null);
@@ -309,9 +321,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     try {
       const res = await apiClient.get(`/api/summary/${id}`);
       // TEMP DEBUG: check your browser console to see the exact shape the
-      // backend returns — if stats/trend/categories look wrong on screen,
-      // paste this log and the field aliases in mapBackendSummary can be
-      // adjusted to match.
+      // backend returns — if stats/trend look wrong on screen, paste this
+      // log and the field aliases in mapBackendSummary can be adjusted to
+      // match.
       // eslint-disable-next-line no-console
       console.log("raw summary response:", res.data);
       setSummary(mapBackendSummary(res.data));
@@ -450,7 +462,22 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       (prev ?? project.tickets).map((t) => (t.id === ticketId ? { ...t, status } : t))
     );
     apiClient.patch(`/tickets/${ticketId}`, { status }).catch((err) => {
-      console.warn("Status change may not have been saved to the server:", err);
+      // The raw AxiosError object is huge and gets truncated in most
+      // terminals/consoles before you reach the actual status code, which
+      // is the one piece of info that tells us what's wrong (404 = wrong
+      // URL, 405 = wrong method, 400 = backend rejected the body shape,
+      // 401 = auth issue). Log those specific fields directly instead.
+      console.warn(
+        "Status change failed to save — HTTP status:",
+        err?.response?.status,
+        "| backend response:",
+        err?.response?.data,
+        "| request URL:",
+        err?.config?.method?.toUpperCase(),
+        err?.config?.url,
+        "| body sent:",
+        err?.config?.data
+      );
     });
   };
 
@@ -525,8 +552,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             open={summary?.open ?? open}
             inProgress={summary?.inProgress ?? inProgress}
             resolved={summary?.resolved ?? resolved}
-            trend={summary?.trend}
-            categories={summary?.categories}
+            trend={summary?.trend && summary.trend.length > 0 ? summary.trend : computedTrend}
             loading={summaryLoading}
             error={summaryError}
           />

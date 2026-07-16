@@ -7,11 +7,45 @@ import Navbar from "@/components/Navbar";
 import { useAppSelector } from "@/lib/redux/hooks";
 import { apiClient } from "@/lib/apiClient";
 
+// Same list used on the signup page's Department picker, kept in sync so
+// "category" here lines up with "department" there. If the backend ever
+// exposes a real endpoint for this list, swap this constant for a fetch.
+const CATEGORY_OPTIONS = [
+  "HR",
+  "Hardware",
+  "Software",
+  "Project Management",
+  "Finance",
+  "Sales",
+  "Marketing",
+  "IT Support",
+  "Operations",
+  "Legal",
+];
+
+// Colored pill per category, same visual language as the ticket priority
+// badges (e.g. the red "High" tag on the kanban board).
+const CATEGORY_COLORS: Record<string, string> = {
+  HR: "bg-pink-100 text-pink-700",
+  Hardware: "bg-orange-100 text-orange-700",
+  Software: "bg-blue-100 text-blue-700",
+  "Project Management": "bg-violet-100 text-violet-700",
+  Finance: "bg-emerald-100 text-emerald-700",
+  Sales: "bg-amber-100 text-amber-700",
+  Marketing: "bg-fuchsia-100 text-fuchsia-700",
+  "IT Support": "bg-cyan-100 text-cyan-700",
+  Operations: "bg-indigo-100 text-indigo-700",
+  Legal: "bg-slate-200 text-slate-700",
+};
+const DEFAULT_CATEGORY_COLOR = "bg-slate-100 text-slate-600";
+
 interface Project {
   id?: string;
   _id?: string;
   name: string;
   description?: string;
+  category?: string;
+  department?: string;
   created_at?: string;
   createdAt?: string;
   user_id?: string;
@@ -25,7 +59,7 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [query, setQuery] = useState("");
   const [showModal, setShowModal] = useState(false);
-  const [newProject, setNewProject] = useState({ name: "", description: "" });
+  const [newProject, setNewProject] = useState({ name: "", description: "", category: "" });
   const [formError, setFormError] = useState("");
   const [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -106,9 +140,12 @@ export default function DashboardPage() {
     setCreating(true);
     setFormError("");
     try {
-      const res = await apiClient.post("/project", {
+      // NOTE: backend endpoint is /api/project (not /project), and it
+      // expects the field name "department" (not "category").
+      const res = await apiClient.post("/api/project", {
         name: newProject.name.trim(),
         description: newProject.description.trim(),
+        department: newProject.category,
       });
       const data = res.data;
       if (res.status < 200 || res.status >= 300) {
@@ -126,7 +163,7 @@ export default function DashboardPage() {
         return dateB - dateA;
       });
       setProjects(sorted);
-      setNewProject({ name: "", description: "" });
+      setNewProject({ name: "", description: "", category: "" });
       setShowModal(false);
     } catch {
       setFormError("Could not reach the server.");
@@ -199,9 +236,18 @@ export default function DashboardPage() {
               >
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex-1 min-w-0">
-                    <h2 className="font-semibold text-slate-900 text-base group-hover:text-violet-700 transition-colors truncate mb-1">
-                      {project.name}
-                    </h2>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h2 className="font-semibold text-slate-900 text-base group-hover:text-violet-700 transition-colors truncate">
+                        {project.name}
+                      </h2>
+                      {project.department && (
+                        <span
+                          className={`shrink-0 text-xs font-semibold px-2.5 py-0.5 rounded-full whitespace-nowrap ${CATEGORY_COLORS[project.department] || DEFAULT_CATEGORY_COLOR}`}
+                        >
+                          {project.department}
+                        </span>
+                      )}
+                    </div>
                     {project.description && (
                       <p className="text-sm text-slate-500 truncate">{project.description}</p>
                     )}
@@ -245,11 +291,45 @@ export default function DashboardPage() {
                   className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 resize-none"
                 />
               </div>
+
+              {/* Category (single-select dropdown) */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
+                  Category
+                </label>
+                <div className="relative">
+                  <select
+                    value={newProject.category}
+                    onChange={(e) => setNewProject({ ...newProject, category: e.target.value })}
+                    className="w-full appearance-none px-3 py-2.5 pr-9 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 bg-white text-left"
+                  >
+                    <option value="">Select a category</option>
+                    {CATEGORY_OPTIONS.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                  >
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </div>
+              </div>
+
               {formError && <p className="text-xs text-red-500">{formError}</p>}
             </div>
             <div className="flex gap-3 mt-6">
               <button
-                onClick={() => { setShowModal(false); setNewProject({ name: "", description: "" }); setFormError(""); }}
+                onClick={() => { setShowModal(false); setNewProject({ name: "", description: "", category: "" }); setFormError(""); }}
                 className="flex-1 py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
                 disabled={creating}
               >

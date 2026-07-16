@@ -461,7 +461,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setRealTickets((prev) =>
       (prev ?? project.tickets).map((t) => (t.id === ticketId ? { ...t, status } : t))
     );
-    apiClient.patch(`/tickets/${ticketId}`, { status }).catch((err) => {
+    apiClient.patch(`/tickets/${ticketId}`, { status }).then(() => {
+      void fetchSummary();
+    }).catch((err) => {
       // The raw AxiosError object is huge and gets truncated in most
       // terminals/consoles before you reach the actual status code, which
       // is the one piece of info that tells us what's wrong (404 = wrong
@@ -548,10 +550,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
         {activeTab === "Summary" && (
           <SummaryTab
-            total={summary?.total ?? displayedTickets.length}
-            open={summary?.open ?? open}
-            inProgress={summary?.inProgress ?? inProgress}
-            resolved={summary?.resolved ?? resolved}
+            total={displayedTickets.length}
+            open={open}
+            inProgress={inProgress}
+            resolved={resolved}
             trend={summary?.trend && summary.trend.length > 0 ? summary.trend : computedTrend}
             loading={summaryLoading}
             error={summaryError}

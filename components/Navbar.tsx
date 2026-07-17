@@ -31,7 +31,7 @@ export default function Navbar({
   const router = useRouter();
   const [userOpen, setUserOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<{ id: string; title: string; projectId: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<{ id: string; ticketNumber?: string; title: string; projectId: string }[]>([]);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -75,19 +75,24 @@ export default function Navbar({
     }
 
     const lower = q.toLowerCase();
-    const results: { id: string; title: string; projectId: string }[] = [];
+    const results: { id: string; ticketNumber?: string; title: string; projectId: string }[] = [];
+
+    const matches = (t: Ticket) =>
+      t.id.toLowerCase().includes(lower) ||
+      t.title.toLowerCase().includes(lower) ||
+      (t.ticketNumber || "").toLowerCase().includes(lower);
 
     if (projectTickets.length > 0) {
       projectTickets.forEach((t) => {
-        if (t.id.toLowerCase().includes(lower) || t.title.toLowerCase().includes(lower)) {
-          results.push({ id: t.id, title: t.title, projectId });
+        if (matches(t)) {
+          results.push({ id: t.id, ticketNumber: t.ticketNumber, title: t.title, projectId });
         }
       });
     } else {
       projects.forEach((proj) => {
         proj.tickets.forEach((t) => {
-          if (t.id.toLowerCase().includes(lower) || t.title.toLowerCase().includes(lower)) {
-            results.push({ id: t.id, title: t.title, projectId: proj.id });
+          if (matches(t)) {
+            results.push({ id: t.id, ticketNumber: t.ticketNumber, title: t.title, projectId: proj.id });
           }
         });
       });
@@ -204,7 +209,7 @@ export default function Navbar({
                       >
                         <span className="text-sm text-slate-700 font-medium truncate">{r.title}</span>
                         <span className="font-mono text-violet-600 font-bold text-[10px] shrink-0">
-                          #{shortToken(r.id)}
+                          #{r.ticketNumber || shortToken(r.id)}
                         </span>
                       </Link>
                     ))}

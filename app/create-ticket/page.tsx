@@ -27,6 +27,14 @@ function formatBytes(bytes: number): string {
   return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
+function getTodayDateString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function extractErrorMessage(err: unknown, fallback: string) {
   return (
     (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data
@@ -82,6 +90,9 @@ function CreateTicketForm() {
     if (!form.title.trim()) e.title = "Title is required";
     if (!form.description.trim()) e.description = "Description is required";
     if (!form.priority) e.priority = "Priority is required";
+    if (form.dueDate && form.dueDate < getTodayDateString()) {
+      e.dueDate = "Due date cannot be in the past";
+    }
     return e;
   };
 
@@ -277,10 +288,14 @@ function CreateTicketForm() {
           </label>
           <input
             type="date"
+            min={getTodayDateString()}
             value={form.dueDate}
             onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
-            className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300"
+            className={`w-full px-3 py-2.5 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 ${
+              errors.dueDate ? "border-red-300 bg-red-50" : "border-slate-200"
+            }`}
           />
+          {errors.dueDate && <p className="text-xs text-red-500 mt-1">{errors.dueDate}</p>}
         </div>
 
         <div>

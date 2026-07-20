@@ -9,8 +9,15 @@ import KanbanBoard from "@/components/KanbanBoard";
 import { useApp } from "@/context/AppStore";
 import { useAppSelector } from "@/lib/redux/hooks";
 import { apiClient } from "@/lib/apiClient";
-import { Ticket, BackendTicket, mapBackendTicket } from "@/lib/data";
+import { Ticket, BackendTicket, mapBackendTicket, KANBAN_COLUMNS } from "@/lib/data";
 import { applyStatusOverrides, setStatusOverride } from "@/lib/ticketStatusStore";
+import {
+  Status,
+  fetchStatuses,
+  createStatus,
+  updateStatus,
+  deleteStatus,
+} from "../../../lib/statusesApi";
 
 type Tab = "Summary" | "Board" | "Members";
 type MemberMode = "new" | "existing";
@@ -30,10 +37,6 @@ interface ProjectMember {
   role: string;
 }
 
-// Backend field names for /summary/:id are unconfirmed, so every field is
-// read defensively with several possible aliases. If the console debug log
-// (search "raw summary response") shows a field name not covered here, add
-// it to the relevant alias chain below.
 interface BackendSummary {
   total?: number;
   total_tickets?: number;
@@ -62,8 +65,6 @@ interface SummaryState {
   trend: TrendPoint[];
 }
 
-// Unwraps {data: {...}} / {summary: {...}} nesting so we can read the
-// actual stats regardless of how the backend wraps the payload.
 function unwrapSummary(raw: BackendSummary): BackendSummary {
   return raw.data ?? raw.summary ?? raw;
 }
@@ -96,10 +97,6 @@ function mapBackendSummary(payload: unknown): SummaryState {
   };
 }
 
-// Builds a real last-7-days trend from the user's actual tickets, used
-// whenever the backend's /summary endpoint doesn't supply trend data
-// itself. Each bucket is a real calendar date (not a hardcoded weekday),
-// so it's correct no matter what day it's viewed on.
 function computeTrendFromTickets(tickets: BackendTicket[]): TrendPoint[] {
   const days: string[] = [];
   const now = new Date();
@@ -154,9 +151,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [membersLoading, setMembersLoading] = useState(true);
   const [membersError, setMembersError] = useState("");
 
-  // Real tickets from the backend, filtered down to this project.
-  // GET /api/tickets returns every ticket across every project — there's
-  // no project-scoped endpoint — so we fetch all and filter client-side.
   const [realTickets, setRealTickets] = useState<Ticket[] | null>(null);
   const [ticketsError, setTicketsError] = useState("");
   const [computedTrend, setComputedTrend] = useState<TrendPoint[]>([]);
@@ -164,6 +158,22 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [summary, setSummary] = useState<SummaryState | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState("");
+
+  // Statuses are PER-PROJECT (backed by GET/POST /api/statuses/:projectId —
+  // see lib/statusesApi.ts). They drive the Kanban board's columns/colors
+  // AND are required to correctly resolve each ticket's status_id into a
+  // display name (see fetchTickets below).
+  const [statuses, setStatuses] = useState<Status[]>([]);
+  const [statusesLoading, setStatusesLoading] = useState(true);
+  const [statusesError, setStatusesError] = useState("");
+  const [showManageStatuses, setShowManageStatuses] = useState(false);
+  const [newStatusName, setNewStatusName] = useState("");
+  const [newStatusColor, setNewStatusColor] = useState("#8b5cf6");
+  const [statusFormError, setStatusFormError] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
+  const [editingStatusId, setEditingStatusId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [editingColor, setEditingColor] = useState("#8b5cf6");
 
   const isAdmin = user?.role?.toLowerCase() === "admin";
 
@@ -182,9 +192,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       setLoading(true);
       setLoadError("");
       try {
-        // There's no GET /project/:id on the backend — the dashboard
-        // endpoint is the only place project data comes from, so fetch
-        // the full list and pick out the one we need.
         const res = await apiClient.get(`/api/users/${user.id}/dashboard`);
         const data = res.data;
 
@@ -275,7 +282,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       const res = await apiClient.get("/tickets");
       const all: BackendTicket[] = res.data?.tickets || [];
       const mine = all.filter((t) => t.project_id === id);
-      setRealTickets(applyStatusOverrides(mine.map(mapBackendTicket)));
+
+      // `statuses` is already the full per-project list (from loadStatuses
+      // below), so tickets can be mapped directly — no per-id resolution
+      // needed since GET /api/statuses/:projectId returns everything.
+      const mapped = mine.map((raw) => mapBackendTicket(raw, statuses));
+      setRealTickets(applyStatusOverrides(mapped));
       setComputedTrend(computeTrendFromTickets(mine));
     } catch {
       setTicketsError("Could not load tickets from the server.");
@@ -286,8 +298,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   useEffect(() => {
     if (!user) return;
     void fetchTickets();
+    // Re-run when `statuses` finishes loading too, so tickets get remapped
+    // correctly once the project's status list is available.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, user]);
+  }, [id, user, statuses]);
 
   const fetchMembers = async () => {
     setMembersLoading(true);
@@ -320,10 +334,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setSummaryError("");
     try {
       const res = await apiClient.get(`/api/summary/${id}`);
-      // TEMP DEBUG: check your browser console to see the exact shape the
-      // backend returns — if stats/trend look wrong on screen, paste this
-      // log and the field aliases in mapBackendSummary can be adjusted to
-      // match.
       // eslint-disable-next-line no-console
       console.log("raw summary response:", res.data);
       setSummary(mapBackendSummary(res.data));
@@ -341,6 +351,98 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     void fetchSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, user]);
+
+  const loadStatuses = async () => {
+    setStatusesLoading(true);
+    setStatusesError("");
+    try {
+      const list = await fetchStatuses(id);
+      setStatuses(list);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("Could not load statuses, falling back to defaults:", err);
+      setStatusesError("Could not load custom statuses — showing defaults.");
+    } finally {
+      setStatusesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    void loadStatuses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, id]);
+
+  const boardColumns = statuses.length > 0 ? statuses.map((s) => s.name) : KANBAN_COLUMNS;
+
+  const handleCreateStatus = async () => {
+    setStatusFormError("");
+    const name = newStatusName.trim();
+    if (!name) {
+      setStatusFormError("Name is required.");
+      return;
+    }
+    if (statuses.some((s) => s.name.toLowerCase() === name.toLowerCase())) {
+      setStatusFormError("A status with that name already exists.");
+      return;
+    }
+    setSavingStatus(true);
+    try {
+      const created = await createStatus(id, name, newStatusColor);
+      setStatuses((prev) => [...prev, created]);
+      setNewStatusName("");
+      setNewStatusColor("#8b5cf6");
+    } catch (err) {
+      console.warn("Failed to create status:", err);
+      setStatusFormError("Could not create that status. Please try again.");
+    } finally {
+      setSavingStatus(false);
+    }
+  };
+
+  const startEditingStatus = (s: Status) => {
+    setEditingStatusId(s.id);
+    setEditingName(s.name);
+    setEditingColor(s.color);
+    setStatusFormError("");
+  };
+
+  const handleSaveStatusEdit = async (s: Status) => {
+    setStatusFormError("");
+    const name = editingName.trim();
+    if (!name) {
+      setStatusFormError("Name is required.");
+      return;
+    }
+    setSavingStatus(true);
+    try {
+      const updated = await updateStatus(s.id, { name, color: editingColor });
+      setStatuses((prev) => prev.map((st) => (st.id === s.id ? updated : st)));
+      if (s.name !== name) {
+        setRealTickets((prev) =>
+          (prev ?? []).map((t) => (t.status === s.name ? { ...t, status: name } : t))
+        );
+      }
+      setEditingStatusId(null);
+    } catch (err) {
+      console.warn("Failed to update status:", err);
+      setStatusFormError("Could not save that change. Please try again.");
+    } finally {
+      setSavingStatus(false);
+    }
+  };
+
+  const handleDeleteStatus = async (s: Status) => {
+    if (!window.confirm(`Delete the "${s.name}" status? Tickets using it will need to be moved.`)) return;
+    setStatusFormError("");
+    try {
+      await deleteStatus(s.id);
+      setStatuses((prev) => prev.filter((st) => st.id !== s.id));
+    } catch (err) {
+      console.warn("Failed to delete status:", err);
+      setStatusFormError("Could not delete that status. Please try again.");
+    }
+  };
 
   const resetMemberForm = () => {
     setMemberName("");
@@ -380,7 +482,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       let memberUserId: string | undefined;
 
       if (memberMode === "new") {
-        // Create the new member's account first so we have a user_id to attach.
         const signupRes = await fetch("/api/auth/signup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -450,23 +551,20 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     );
   }
 
-  // Drag-and-drop status change: updates the board immediately (optimistic),
-  // and *attempts* to persist it to the backend. There's no confirmed
-  // "update ticket status" endpoint yet, so this guesses the conventional
-  // PATCH /tickets/:id shape. If that guess is wrong the request will just
-  // fail quietly (console-logged) and the board stays correct locally — but
-  // the change won't survive a refresh until the real endpoint is confirmed.
+  // Drag-and-drop / dropdown status change: updates the board immediately
+  // (optimistic), and persists it to the backend. Sends BOTH the display
+  // name (`status`) and the matching status_id (`status_id`) if we have
+  // one, since the backend's ticket status column likely expects the id.
   const handleTicketStatusChange = (ticketId: string, status: Ticket["status"]) => {
     setStatusOverride(ticketId, status);
     setRealTickets((prev) =>
       (prev ?? project.tickets).map((t) => (t.id === ticketId ? { ...t, status } : t))
     );
-    apiClient.patch(`/tickets/${ticketId}`, { status }).catch((err) => {
-      // The raw AxiosError object is huge and gets truncated in most
-      // terminals/consoles before you reach the actual status code, which
-      // is the one piece of info that tells us what's wrong (404 = wrong
-      // URL, 405 = wrong method, 400 = backend rejected the body shape,
-      // 401 = auth issue). Log those specific fields directly instead.
+
+    const statusRecord = statuses.find((s) => s.name === status);
+    const patchBody = statusRecord ? { status, status_id: statusRecord.id } : { status };
+
+    apiClient.patch(`/tickets/${ticketId}`, patchBody).catch((err) => {
       console.warn(
         "Status change failed to save — HTTP status:",
         err?.response?.status,
@@ -519,13 +617,22 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               </button>
             )}
             {activeTab === "Board" && (
-              <Link
-                href={`/create-ticket?project=${project.id}&tab=Board&name=${encodeURIComponent(project.name)}&description=${encodeURIComponent(project.description || "")}`}
-                className="flex items-center gap-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-1.5 transition-colors shadow-sm shadow-violet-200"
-              >
-                <i className="fi fi-rr-plus text-sm"></i>
-                <span className="hidden sm:inline">Create Ticket</span>
-              </Link>
+              <>
+                <button
+                  onClick={() => { setShowManageStatuses(true); setStatusFormError(""); setEditingStatusId(null); }}
+                  className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg px-3 py-1.5 transition-colors"
+                >
+                  <i className="fi fi-rr-settings text-sm"></i>
+                  <span className="hidden sm:inline">Manage Statuses</span>
+                </button>
+                <Link
+                  href={`/create-ticket?project=${project.id}&tab=Board&name=${encodeURIComponent(project.name)}&description=${encodeURIComponent(project.description || "")}`}
+                  className="flex items-center gap-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg px-3 py-1.5 transition-colors shadow-sm shadow-violet-200"
+                >
+                  <i className="fi fi-rr-plus text-sm"></i>
+                  <span className="hidden sm:inline">Create Ticket</span>
+                </Link>
+              </>
             )}
           </div>
         </div>
@@ -558,11 +665,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           />
         )}
         {activeTab === "Board" && (
-          <KanbanBoard
-            tickets={displayedTickets}
-            projectId={project.id}
-            onStatusChange={handleTicketStatusChange}
-          />
+          <>
+            {statusesError && (
+              <p className="text-xs text-amber-600 mb-3">{statusesError}</p>
+            )}
+            <KanbanBoard
+              tickets={displayedTickets}
+              projectId={project.id}
+              onStatusChange={handleTicketStatusChange}
+              columns={boardColumns}
+              statuses={statuses}
+            />
+          </>
         )}
 
         {activeTab === "Members" && (
@@ -738,6 +852,125 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 {addingMember ? "Adding..." : "Add Member"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showManageStatuses && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md p-6 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-lg font-bold text-slate-900">Manage Statuses</h2>
+              <button
+                onClick={() => setShowManageStatuses(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Statuses are specific to this project.
+            </p>
+
+            {statusesLoading ? (
+              <p className="text-sm text-slate-400 py-6 text-center">Loading statuses...</p>
+            ) : (
+              <div className="space-y-2 mb-4">
+                {statuses.length === 0 && (
+                  <p className="text-sm text-slate-400 py-2">No custom statuses yet — using defaults.</p>
+                )}
+                {statuses.map((s) => (
+                  <div key={s.id} className="flex items-center gap-2 border border-slate-200 rounded-lg px-3 py-2">
+                    {editingStatusId === s.id ? (
+                      <>
+                        <input
+                          type="color"
+                          value={editingColor}
+                          onChange={(e) => setEditingColor(e.target.value)}
+                          className="w-8 h-8 rounded border border-slate-200 shrink-0 cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          className="flex-1 min-w-0 text-sm border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => handleSaveStatusEdit(s)}
+                          disabled={savingStatus}
+                          className="text-xs font-semibold text-violet-700 hover:text-violet-900 shrink-0"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingStatusId(null)}
+                          className="text-xs text-slate-400 hover:text-slate-600 shrink-0"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span
+                          className="w-4 h-4 rounded-full shrink-0 border border-black/10"
+                          style={{ backgroundColor: s.color }}
+                        />
+                        <span className="flex-1 min-w-0 text-sm text-slate-800 truncate">{s.name}</span>
+                        <button
+                          onClick={() => startEditingStatus(s)}
+                          className="text-xs font-semibold text-slate-500 hover:text-violet-700 shrink-0"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteStatus(s)}
+                          className="text-xs font-semibold text-red-400 hover:text-red-600 shrink-0"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="border-t border-slate-100 pt-4">
+              <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
+                Add Status
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={newStatusColor}
+                  onChange={(e) => setNewStatusColor(e.target.value)}
+                  className="w-9 h-9 rounded border border-slate-200 shrink-0 cursor-pointer"
+                />
+                <input
+                  type="text"
+                  value={newStatusName}
+                  onChange={(e) => setNewStatusName(e.target.value)}
+                  placeholder="e.g. Blocked"
+                  className="flex-1 min-w-0 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                />
+                <button
+                  onClick={handleCreateStatus}
+                  disabled={savingStatus}
+                  className="text-sm font-semibold bg-violet-600 hover:bg-violet-700 disabled:bg-violet-400 text-white rounded-lg px-3 py-2 transition-colors shrink-0"
+                >
+                  Add
+                </button>
+              </div>
+              {statusFormError && <p className="text-xs text-red-500 mt-2">{statusFormError}</p>}
+            </div>
+
+            <button
+              onClick={() => setShowManageStatuses(false)}
+              className="w-full mt-5 py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}

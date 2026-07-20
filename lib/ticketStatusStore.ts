@@ -2,7 +2,6 @@ import { TicketStatus } from "./data";
 
 const STORAGE_KEY = "ticket-status-overrides";
 
-
 function loadOverrides(): Map<string, TicketStatus> {
   if (typeof window === "undefined") return new Map();
   try {
@@ -23,7 +22,7 @@ function saveOverrides(overrides: Map<string, TicketStatus>): void {
       JSON.stringify(Object.fromEntries(overrides))
     );
   } catch {
-    
+    // ignore write errors (e.g. storage disabled/full)
   }
 }
 

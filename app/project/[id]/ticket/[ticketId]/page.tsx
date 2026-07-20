@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, use, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, use, useCallback, useMemo, useRef, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
@@ -9,6 +9,8 @@ import { applyStatusOverrides, setStatusOverride } from "@/lib/ticketStatusStore
 import {
   PRIORITY_COLORS,
   STATUS_COLORS,
+  KANBAN_COLUMNS,
+  statusColorStyle,
   TicketStatus,
   Ticket,
   Comment,
@@ -16,9 +18,15 @@ import {
   BackendTicket,
   mapBackendTicket,
 } from "@/lib/data";
+import { Status, fetchStatuses } from "@/lib/statusesApi";
 import { useAppSelector } from "@/lib/redux/hooks";
 
-const ALL_STATUSES: TicketStatus[] = ["Backlog", "To Do", "In Progress", "Review", "Done"];
+interface ProjectMember {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
 
 interface BackendComment {
   id: string;
@@ -38,10 +46,6 @@ function mapBackendComment(raw: BackendComment): Comment {
   };
 }
 
-// Backend field names are unconfirmed for this endpoint, so every field is
-// read defensively with several possible aliases. Widened after ticket-level
-// attachments weren't rendering — if the console debug log below shows a
-// field name not covered here, add it to the relevant alias chain.
 interface BackendAttachment {
   id?: string;
   _id?: string;
@@ -80,8 +84,6 @@ function formatBytes(bytes?: number): string {
   return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
-// Pulls a filename out of a full path if that's all the backend gave us
-// (e.g. "uploads/1720012345-report.pdf" -> "report.pdf").
 function basename(path?: string): string | undefined {
   if (!path) return undefined;
   const parts = path.split(/[/\\]/);
@@ -106,8 +108,6 @@ function mapBackendAttachment(raw: BackendAttachment): Attachment {
   };
 }
 
-// Pulls an array out of whatever shape the backend actually returns —
-// a bare array, {attachments: [...]}, {data: [...]}, or {data: {attachments: [...]}}.
 function extractAttachmentArray(payload: unknown): BackendAttachment[] {
   if (Array.isArray(payload)) return payload as BackendAttachment[];
   if (payload && typeof payload === "object") {
@@ -153,6 +153,10 @@ export default function TicketPage({
   const [commentError, setCommentError] = useState("");
 
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [statuses, setStatuses] = useState<Status[]>([]);
+
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [showAssigneeMenu, setShowAssigneeMenu] = useState(false);
 
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(true);
@@ -168,6 +172,35 @@ export default function TicketPage({
       router.replace("/");
     }
   }, [user, router]);
+
+  // Statuses are PER-PROJECT — see lib/statusesApi.ts (GET /api/statuses/:projectId
+  // returns the full list for this project in one call). Falls back to the
+  // static KANBAN_COLUMNS default list further down if this fails or hasn't
+  // loaded yet.
+  useEffect(() => {
+    if (!user) return;
+    fetchStatuses(id)
+      .then(setStatuses)
+      .catch((err) => console.warn("Could not load statuses:", err));
+  }, [user, id]);
+
+  // Project members, used to populate the "Assignee" dropdown — same
+  // /project/:id/members route the create-ticket page already uses.
+  useEffect(() => {
+    if (!user) return;
+    apiClient
+      .get(`/project/${id}/members`)
+      .then((res) => setMembers(res.data?.members || []))
+      .catch((err) => console.warn("Could not load project members:", err));
+  }, [user, id]);
+
+  const allStatuses: TicketStatus[] = statuses.length > 0 ? statuses.map((s) => s.name) : KANBAN_COLUMNS;
+
+  const statusBadgeStyle = (status: TicketStatus) => {
+    const match = statuses.find((s) => s.name === status);
+    if (match) return { className: "border", style: statusColorStyle(match.color) };
+    return { className: STATUS_COLORS[status] ?? "bg-slate-100 text-slate-600", style: undefined as CSSProperties | undefined };
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -185,7 +218,10 @@ export default function TicketPage({
           setLoadError("Ticket not found.");
           return;
         }
-        setTicket(applyStatusOverrides([mapBackendTicket(raw)])[0]);
+
+        // `statuses` is the full per-project list from fetchStatuses(id) above,
+        // so no per-id resolution is needed here anymore.
+        setTicket(applyStatusOverrides([mapBackendTicket(raw, statuses)])[0]);
       } catch {
         if (isActive) setLoadError("Could not reach the server.");
       } finally {
@@ -197,10 +233,11 @@ export default function TicketPage({
     return () => {
       isActive = false;
     };
-  }, [id, ticketId, user]);
+    // Re-run when `statuses` finishes loading too, so the ticket gets
+    // remapped correctly once the project's status list is available.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, ticketId, user, statuses]);
 
-  // Returns the list of comment IDs it fetched, so callers can use them
-  // to also pull comment-level attachments in the same refresh cycle.
   const fetchComments = useCallback(async (): Promise<string[]> => {
     setCommentsLoading(true);
     try {
@@ -210,17 +247,12 @@ export default function TicketPage({
       setComments(mapped);
       return mapped.map((c) => c.id);
     } catch {
-      // keep whatever we already have
       return [];
     } finally {
       setCommentsLoading(false);
     }
   }, [ticketId]);
 
-  // Fetches BOTH ticket-level attachments (/attachments/ticket/:id) and
-  // comment-level attachments (/attachments/comment/:id) and merges them.
-  // commentIds must be passed in explicitly — pass whatever fetchComments()
-  // just returned.
   const fetchAttachments = useCallback(
     async (commentIds: string[] = []) => {
       setAttachmentsLoading(true);
@@ -332,14 +364,8 @@ export default function TicketPage({
           const results = await Promise.allSettled(
             draftFiles.map((file) => {
               const formData = new FormData();
-              // Only comment_id is sent here — sending ticket_id at the
-              // same time causes the backend to file this under the ticket
-              // instead of (or as well as) the comment, or reject it outright.
               formData.append("comment_id", newCommentId);
               formData.append("file", file);
-              // ⚠️ Must override Content-Type here — apiClient defaults to
-              // application/json, which breaks the multipart boundary and
-              // causes the backend to 400 this request.
               return apiClient.post("/attachments", formData, {
                 headers: { "Content-Type": undefined },
               });
@@ -405,13 +431,40 @@ export default function TicketPage({
     }
   };
 
+  // Sends both the display name and the matching status_id (if we have
+  // one), since the backend's ticket status column likely expects the id
+  // rather than the name.
   const handleSetStatus = (s: TicketStatus) => {
     setStatusOverride(ticketId, s);
     setTicket((prev) => (prev ? { ...prev, status: s } : prev));
     setShowStatusMenu(false);
-    apiClient.patch(`/tickets/${ticketId}`, { status: s }).catch((err) => {
+
+    const statusRecord = statuses.find((st) => st.name === s);
+    const patchBody = statusRecord ? { status: s, status_id: statusRecord.id } : { status: s };
+
+    apiClient.patch(`/tickets/${ticketId}`, patchBody).catch((err) => {
       console.warn("Status change may not have been saved to the server:", err);
     });
+  };
+
+  // Reassigns the ticket. `member` is null for "Unassigned". NOT YET
+  // CONFIRMED against the backend — this assumes PATCH /tickets/:id
+  // accepts `assigned_to` the same way POST /tickets does when a ticket
+  // is created. If reassigning doesn't persist after a refresh, check the
+  // Network tab response for this PATCH call.
+  const handleSetAssignee = (member: ProjectMember | null) => {
+    setTicket((prev) =>
+      prev
+        ? { ...prev, assignee: member ? member.name : "Unassigned", assignedToId: member?.id }
+        : prev
+    );
+    setShowAssigneeMenu(false);
+
+    apiClient
+      .patch(`/tickets/${ticketId}`, { assigned_to: member?.id ?? null })
+      .catch((err) => {
+        console.warn("Assignee change may not have been saved to the server:", err);
+      });
   };
 
   const AttachmentRow = ({ a }: { a: Attachment }) => (
@@ -459,14 +512,15 @@ export default function TicketPage({
             <div className="relative">
               <button
                 onClick={() => setShowStatusMenu(!showStatusMenu)}
-                className={`flex items-center gap-2 text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors ${STATUS_COLORS[ticket.status]}`}
+                className={`flex items-center gap-2 text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors ${statusBadgeStyle(ticket.status).className}`}
+                style={statusBadgeStyle(ticket.status).style}
               >
                 <span className="w-2 h-2 rounded-full bg-current opacity-60" />
                 {ticket.status} ▾
               </button>
               {showStatusMenu && (
                 <div className="absolute right-0 top-9 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-200 py-1 z-30 w-40">
-                  {ALL_STATUSES.map((s) => (
+                  {allStatuses.map((s) => (
                     <button
                       key={s}
                       onClick={() => handleSetStatus(s)}
@@ -491,18 +545,62 @@ export default function TicketPage({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
-          {[
-            { key: "Priority", val: ticket.priority },
-            { key: "Assignee", val: ticket.assignee },
-            { key: "Created On", val: ticket.createdAt },
-            { key: "Last Updated", val: ticket.updatedAt },
-            { key: "Reporter", val: ticket.reporter ?? "—" },
-          ].map(({ key, val }) => (
-            <div key={key} className="bg-white border border-slate-100 rounded-lg px-3 py-2.5">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{key}</div>
-              <div className="text-sm text-slate-800 font-medium">{val}</div>
-            </div>
-          ))}
+          <div className="bg-white border border-slate-100 rounded-lg px-3 py-2.5">
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Priority</div>
+            <div className="text-sm text-slate-800 font-medium">{ticket.priority}</div>
+          </div>
+
+          <div className="relative bg-white border border-slate-100 rounded-lg px-3 py-2.5">
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Assignee</div>
+            <button
+              type="button"
+              onClick={() => setShowAssigneeMenu(!showAssigneeMenu)}
+              className="text-sm text-slate-800 font-medium hover:text-violet-700 transition-colors"
+            >
+              {ticket.assignee} ▾
+            </button>
+            {showAssigneeMenu && (
+              <div className="absolute left-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-200 py-1 z-30 w-48 max-h-56 overflow-y-auto">
+                <button
+                  onClick={() => handleSetAssignee(null)}
+                  className={`w-full text-left text-xs px-4 py-2 hover:bg-slate-50 transition-colors ${
+                    ticket.assignee === "Unassigned" ? "font-bold text-violet-700" : "text-slate-700"
+                  }`}
+                >
+                  Unassigned
+                </button>
+                {members.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => handleSetAssignee(m)}
+                    className={`w-full text-left text-xs px-4 py-2 hover:bg-slate-50 transition-colors truncate ${
+                      ticket.assignedToId === m.id ? "font-bold text-violet-700" : "text-slate-700"
+                    }`}
+                  >
+                    {m.name}
+                  </button>
+                ))}
+                {members.length === 0 && (
+                  <p className="text-xs text-slate-400 px-4 py-2">No members found.</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white border border-slate-100 rounded-lg px-3 py-2.5">
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Created On</div>
+            <div className="text-sm text-slate-800 font-medium">{ticket.createdAt}</div>
+          </div>
+
+          <div className="bg-white border border-slate-100 rounded-lg px-3 py-2.5">
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Last Updated</div>
+            <div className="text-sm text-slate-800 font-medium">{ticket.updatedAt}</div>
+          </div>
+
+          <div className="bg-white border border-slate-100 rounded-lg px-3 py-2.5">
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Reporter</div>
+            <div className="text-sm text-slate-800 font-medium">{ticket.reporter ?? "—"}</div>
+          </div>
         </div>
 
         <div className="space-y-5">
@@ -511,10 +609,6 @@ export default function TicketPage({
             <p className="text-sm text-slate-600 leading-relaxed">{ticket.description}</p>
           </div>
 
-          {/* Ticket Attachments — read-only. Files land here from either the
-              attachment picker on ticket creation, or from comments below.
-              There is deliberately no upload control on this page anymore;
-              adding a file is only possible from the comment box. */}
           {(attachmentsLoading || ticketLevelAttachments.length > 0) && (
             <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5">
               <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3 flex items-center gap-2">

@@ -6,7 +6,8 @@ import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { useAppSelector } from "@/lib/redux/hooks";
 import { apiClient } from "@/lib/apiClient";
-import { Priority } from "@/lib/data";
+import { Priority, KANBAN_COLUMNS } from "@/lib/data";
+import { fetchStatuses } from "@/lib/statusesApi";
 
 interface ProjectMember {
   id: string;
@@ -66,6 +67,17 @@ function CreateTicketForm() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [apiError, setApiError] = useState("");
 
+  // The status a brand-new ticket is created with. Statuses are dynamic
+  // and PER-PROJECT (see lib/statusesApi.ts). The backend's /api/tickets
+  // route expects a `status_id` (UUID referencing a real status row) —
+  // NOT a status name string, so we need to track both the display name
+  // (for KANBAN_COLUMNS fallback / UI) and the actual id used on submit.
+  // Sending a name where the backend expects an id is what caused
+  // "Invalid status" 400s previously.
+  const [initialStatus, setInitialStatus] = useState<string>(KANBAN_COLUMNS[0]);
+  const [initialStatusId, setInitialStatusId] = useState<string>("");
+  const [statusReady, setStatusReady] = useState(false);
+
   // Files are only staged here — they can't actually be uploaded until the
   // ticket exists, since /attachments requires a ticket_id.
   const [files, setFiles] = useState<File[]>([]);
@@ -84,6 +96,26 @@ function CreateTicketForm() {
       .then((res) => setMembers(res.data.members || []))
       .catch(() => setMembers([]));
   }, [projectId]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (!projectId) {
+      // Nothing to fetch statuses for — fall back to the static default
+      // and let the "statuses haven't loaded" guard on submit catch it.
+      setStatusReady(true);
+      return;
+    }
+    fetchStatuses(projectId)
+      .then((list) => {
+        if (list.length === 0) return;
+        const preferred =
+          list.find((s) => /^(backlog|to ?do|open|new)$/i.test(s.name)) ?? list[0];
+        setInitialStatus(preferred.name);
+        setInitialStatusId(preferred.id);
+      })
+      .catch((err) => console.warn("Could not load statuses for new ticket:", err))
+      .finally(() => setStatusReady(true));
+  }, [user, projectId]);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -105,17 +137,19 @@ function CreateTicketForm() {
       return;
     }
 
+    if (!initialStatusId) {
+      setApiError("Ticket statuses haven't finished loading. Please wait a moment and try again.");
+      return;
+    }
+
     setLoading(true);
     try {
-      // Confirmed backend shape (verified via curl):
-      // POST /tickets { title, description, status, priority, project_id, ticket_order }
-      // assigned_to / due_date are sent as optional extras since the UI
-      // supports them — if the backend ignores or rejects them, they can
-      // be moved to a separate PATCH /tickets/:id call after creation.
+      // status_id is resolved dynamically above (see initialStatusId) —
+      // the backend expects the status's UUID, not its display name.
       const res = await apiClient.post("/tickets", {
         title: form.title.trim(),
         description: form.description.trim(),
-        status: "To Do",
+        status_id: initialStatusId,
         priority: form.priority,
         project_id: projectId,
         ticket_order: "1",
@@ -175,11 +209,11 @@ function CreateTicketForm() {
 
   if (submitted) {
     return (
-      <div className="text-center py-16">
-        <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <span className="text-3xl text-emerald-600">✓</span>
+      <div className="text-center py-12 sm:py-16 px-4">
+        <div className="w-14 h-14 sm:w-16 sm:h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <span className="text-2xl sm:text-3xl text-emerald-600">✓</span>
         </div>
-        <h2 className="text-xl font-bold text-slate-900 mb-2">Ticket Created!</h2>
+        <h2 className="text-lg sm:text-xl font-bold text-slate-900 mb-2">Ticket Created!</h2>
         {attachmentWarning ? (
           <p className="text-amber-600 text-sm max-w-sm mx-auto">{attachmentWarning}</p>
         ) : (
@@ -190,17 +224,19 @@ function CreateTicketForm() {
   }
 
   return (
-    <div className="max-w-xl">
-      <div className="flex items-center gap-3 mb-6">
+    <div className="w-full sm:max-w-xl">
+      <div className="flex items-center gap-2.5 sm:gap-3 mb-5 sm:mb-6">
         <Link
           href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"}
-          className="text-slate-500 hover:text-violet-600 transition-colors"
+          className="text-slate-500 hover:text-violet-600 transition-colors shrink-0"
         >
           <i className="fi fi-rr-arrow-left text-lg"></i>
         </Link>
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">Create New Ticket</h1>
-          {projectName && <p className="text-sm text-slate-500">Project: {projectName}</p>}
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-xl font-bold text-slate-900 truncate">Create New Ticket</h1>
+          {projectName && (
+            <p className="text-xs sm:text-sm text-slate-500 truncate">Project: {projectName}</p>
+          )}
         </div>
       </div>
 
@@ -241,13 +277,13 @@ function CreateTicketForm() {
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Priority <span className="text-red-500">*</span>
           </label>
-          <div className="flex gap-2">
+          <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
             {(["High", "Medium", "Low"] as Priority[]).map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setForm({ ...form, priority: p })}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-all ${
+                className={`py-2 text-xs sm:text-sm font-medium rounded-lg border transition-all ${
                   form.priority === p
                     ? p === "High"
                       ? "bg-red-100 border-red-300 text-red-700"
@@ -302,7 +338,7 @@ function CreateTicketForm() {
           <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5">
             Attachments <span className="text-xs font-normal text-slate-400">(optional)</span>
           </label>
-          <label className="flex items-center justify-center gap-2 w-full px-3 py-3 text-sm border border-dashed border-slate-300 rounded-lg text-slate-500 hover:border-violet-300 hover:text-violet-600 cursor-pointer transition-colors">
+          <label className="flex items-center justify-center gap-2 w-full px-3 py-3 text-xs sm:text-sm border border-dashed border-slate-300 rounded-lg text-slate-500 hover:border-violet-300 hover:text-violet-600 cursor-pointer transition-colors">
             <i className="fi fi-rr-paperclip text-sm"></i>
             Click to add file(s)
             <input
@@ -344,11 +380,17 @@ function CreateTicketForm() {
 
         <p className="text-xs text-slate-400">* Required fields</p>
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex flex-col-reverse sm:flex-row gap-2.5 sm:gap-3 pt-2">
+          <Link
+            href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"}
+            className="flex-1 text-center py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+          >
+            Cancel
+          </Link>
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={loading}
+            disabled={loading || !statusReady || !initialStatusId}
             className="flex-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-400 text-white font-semibold py-2.5 rounded-lg transition-all shadow-sm shadow-violet-200 text-sm"
           >
             {loading ? (
@@ -360,12 +402,6 @@ function CreateTicketForm() {
               "Submit Ticket"
             )}
           </button>
-          <Link
-            href={projectId ? `/project/${projectId}?tab=Board` : "/dashboard"}
-            className="flex-1 text-center py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
-          >
-            Cancel
-          </Link>
         </div>
       </div>
     </div>
@@ -376,8 +412,8 @@ export default function CreateTicketPage() {
   return (
     <div className="min-h-screen bg-slate-50">
       <Navbar showDashboardBtn showSearch={false} />
-      <main className="max-w-4xl mx-auto px-6 py-8">
-        <Suspense fallback={<div className="text-slate-500">Loading...</div>}>
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <Suspense fallback={<div className="text-slate-500 text-sm">Loading...</div>}>
           <CreateTicketForm />
         </Suspense>
       </main>

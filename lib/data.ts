@@ -1,5 +1,11 @@
+import type { CSSProperties } from "react";
+import type { Status } from "./statusesApi";
+
 export type Priority = "High" | "Medium" | "Low" | "Critical";
-export type TicketStatus = "Backlog" | "To Do" | "In Progress" | "Review" | "Done";
+// Statuses used to be a fixed union, but they're now managed through the
+// /api/statuses CRUD endpoints (see lib/statusesApi.ts) and can be
+// renamed/added/removed at runtime, so this is just a string now.
+export type TicketStatus = string;
 export type ProjectStatus = "In Progress" | "Active" | "Completed";
 
 export interface Ticket {
@@ -24,17 +30,24 @@ export interface Ticket {
 }
 
 // ---- Backend -> frontend ticket mapping ----
-// The backend's GET /api/tickets returns ALL tickets (no project filter) with
-// its own field names (snake_case, nested user objects, etc). This adapts
-// one raw ticket object from that response into the shape the UI expects.
-// Any backend status/priority we don't recognize falls back to a safe default
-// instead of crashing the Kanban board or the filters.
-const KNOWN_STATUSES: TicketStatus[] = ["Backlog", "To Do", "In Progress", "Review", "Done"];
 const KNOWN_PRIORITIES: Priority[] = ["Low", "Medium", "High", "Critical"];
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Exported so callers (project page, ticket page) can figure out which
+// status ids they need to resolve via ensureStatusesLoaded() BEFORE calling
+// mapBackendTicket, instead of mapBackendTicket silently defaulting to
+// "Backlog" when it doesn't have a matching status in its list yet.
+export function looksLikeUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+// Kept for backward compatibility / callers that just need "some non-empty
+// name or Backlog" without id resolution. mapBackendTicket below no longer
+// uses this directly — see resolveTicketStatus.
 export function normalizeStatus(raw: string | null | undefined): TicketStatus {
-  if (raw && (KNOWN_STATUSES as string[]).includes(raw)) return raw as TicketStatus;
-  return "Backlog"; // covers legacy/unexpected values like "Open"
+  const trimmed = raw?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "Backlog";
 }
 
 export function normalizePriority(raw: string | null | undefined): Priority {
@@ -44,12 +57,21 @@ export function normalizePriority(raw: string | null | undefined): Priority {
 
 // Minimal shape of one item from the backend's tickets array — only the
 // fields we actually read are typed, everything else is ignored.
+//
+// Status shape: ticket creation sends `status_id` (a UUID), so GET /tickets
+// may return the status as a flat name string, a flat UUID, a
+// `status_id`/`statusId` foreign key, or a joined `statuses` relation
+// object. All of these are typed here and resolveTicketStatus() below reads
+// across all of them defensively.
 export interface BackendTicket {
   id: string;
   ticket_number?: string;
   title: string;
   description?: string;
   status?: string;
+  status_id?: string;
+  statusId?: string;
+  statuses?: { id?: string; name?: string; color?: string } | null;
   priority?: string;
   project_id: string;
   created_at?: string;
@@ -62,14 +84,46 @@ export interface BackendTicket {
   attachments?: Array<{ id: string; file_name: string }>;
 }
 
-export function mapBackendTicket(raw: BackendTicket): Ticket {
+// Resolves a ticket's status to a display name, checked in this order:
+//  1. A joined `statuses` relation object (e.g. `{ id, name, color }`) —
+//     preferred since it's unambiguous.
+//  2. A `status_id` / `statusId` field, OR a `status` field that looks like
+//     a raw UUID — resolved against `statusList` (from GET /api/statuses,
+//     see lib/statusesApi.ts) to find the matching name.
+//  3. A `status` field that does NOT look like a UUID — used directly as
+//     the name.
+// Falls back to "Backlog" only when nothing usable was found (e.g. the
+// status list hasn't loaded yet and we can't resolve an id) — callers
+// should call ensureStatusesLoaded() first to minimize this happening.
+export function resolveTicketStatus(raw: BackendTicket, statusList: Status[] = []): TicketStatus {
+  if (raw.statuses?.name) return raw.statuses.name;
+
+  const idCandidate =
+    raw.status_id ?? raw.statusId ?? (raw.status && looksLikeUuid(raw.status) ? raw.status : undefined);
+
+  if (idCandidate) {
+    const match = statusList.find((s) => s.id === idCandidate);
+    if (match) return match.name;
+    // eslint-disable-next-line no-console
+    console.warn(
+      "Ticket has a status id that doesn't match any loaded status (statuses may still be loading):",
+      idCandidate
+    );
+  }
+
+  if (raw.status && !looksLikeUuid(raw.status)) return raw.status;
+
+  return "Backlog";
+}
+
+export function mapBackendTicket(raw: BackendTicket, statusList: Status[] = []): Ticket {
   return {
     id: raw.id,
     ticketNumber: raw.ticket_number,
     title: raw.title,
     category: "",
     priority: normalizePriority(raw.priority),
-    status: normalizeStatus(raw.status),
+    status: resolveTicketStatus(raw, statusList),
     assignee: raw.users_tickets_assigned_toTousers?.name || "Unassigned",
     assignedToId: raw.assigned_to ?? null,
     reporter: raw.users_tickets_created_byTousers?.name || "Unknown",
@@ -120,7 +174,6 @@ export interface WorkLogEntry {
 }
 
 // ---- Duration helpers ("3h 00m" <-> minutes) ----
-// Used by Work Log so logging time keeps Time Spent / Remaining in sync.
 export function parseDurationToMinutes(value: string): number {
   if (!value) return 0;
   const hMatch = value.match(/(\d+)\s*h/i);
@@ -251,7 +304,9 @@ export const PRIORITY_COLORS: Record<Priority, string> = {
   Low: "bg-green-100 text-green-700 border-green-200",
 };
 
-export const STATUS_COLORS: Record<TicketStatus, string> = {
+// Fallback palette used only before /api/statuses has loaded, or if that
+// call fails — keeps the board looking right instead of blank/unstyled.
+export const STATUS_COLORS: Record<string, string> = {
   Backlog: "bg-slate-100 text-slate-600",
   "To Do": "bg-blue-100 text-blue-700",
   "In Progress": "bg-violet-100 text-violet-700",
@@ -260,6 +315,20 @@ export const STATUS_COLORS: Record<TicketStatus, string> = {
 };
 
 export const KANBAN_COLUMNS: TicketStatus[] = ["Backlog", "To Do", "In Progress", "Review", "Done"];
+
+// Statuses now come from the backend with an arbitrary hex color (e.g.
+// "#00FF00"), which Tailwind's static class scanning can't pick up — so
+// badges/pills for real (non-fallback) statuses are styled inline instead
+// of via STATUS_COLORS. Given a hex color, this returns a soft tinted
+// background + the color itself for text, readable on light backgrounds.
+export function statusColorStyle(hex: string | undefined): CSSProperties {
+  const color = hex && /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : "#94a3b8";
+  return {
+    backgroundColor: `${color}22`, // ~13% opacity tint
+    color,
+    borderColor: `${color}55`,
+  };
+}
 
 export const TREND_DATA = [
   { day: "10 May", tickets: 4 },
